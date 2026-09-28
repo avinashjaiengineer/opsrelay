@@ -25,6 +25,11 @@ class Settings(BaseSettings):
     aws_region: str = "us-east-1"
     max_tokens: int = 16000
 
+    # What the agents observe and act on: "simulated" (scenarios, no real systems) or "aws"
+    # (CloudWatch metrics and logs, ECS deployments; see opsrelay/connectors).
+    environment: Literal["simulated", "aws"] = "simulated"
+    service_catalog: str = ""
+
     # "sqlite" for local development; "dynamodb" on AWS (all runtimes share one table).
     store: Literal["sqlite", "dynamodb"] = "sqlite"
     sqlite_path: str = "opsrelay.db"

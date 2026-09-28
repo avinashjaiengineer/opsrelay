@@ -1,0 +1,57 @@
+# Service catalog for OPSRELAY_ENVIRONMENT=aws (see opsrelay/connectors/catalog.py).
+#
+#   OPSRELAY_ENVIRONMENT=aws
+#   OPSRELAY_SERVICE_CATALOG=/path/to/catalog.yaml
+#
+# Each service: what it is, how critical (tier 1 raises remediation risk), who owns it, what it
+# depends on, where its logs are, which ECS service runs it, and which CloudWatch metrics
+# describe it. Replace the dimension values with your own.
+
+services:
+  checkout-api:
+    description: Checkout and payment orchestration
+    tier: 1
+    owner_team: payments
+    depends_on: [payments-db]
+    max_replicas: 10
+    log_group: /ecs/checkout-api
+    ecs: {cluster: prod, service: checkout-api}
+    healthy_when: {error_rate_below: 0.01, p99_latency_ms_below: 500}
+    metrics:
+      errors:
+        namespace: AWS/ApplicationELB
+        name: HTTPCode_Target_5XX_Count
+        stat: Sum
+        dimensions: {LoadBalancer: app/prod-alb/0123456789abcdef, TargetGroup: targetgroup/checkout/0123456789abcdef}
+      requests:
+        namespace: AWS/ApplicationELB
+        name: RequestCount
+        stat: Sum
+        dimensions: {LoadBalancer: app/prod-alb/0123456789abcdef, TargetGroup: targetgroup/checkout/0123456789abcdef}
+      p99_latency_seconds:
+        namespace: AWS/ApplicationELB
+        name: TargetResponseTime
+        stat: p99
+        dimensions: {LoadBalancer: app/prod-alb/0123456789abcdef, TargetGroup: targetgroup/checkout/0123456789abcdef}
+      cpu_pct:
+        namespace: AWS/ECS
+        name: CPUUtilization
+        stat: Average
+        dimensions: {ClusterName: prod, ServiceName: checkout-api}
+      memory_pct:
+        namespace: AWS/ECS
+        name: MemoryUtilization
+        stat: Average
+        dimensions: {ClusterName: prod, ServiceName: checkout-api}
+
+  payments-db:
+    description: Payments database (observed only; no deployment connector)
+    tier: 1
+    owner_team: data
+    healthy_when: {cpu_pct_below: 80}
+    metrics:
+      cpu_pct:
+        namespace: AWS/RDS
+        name: CPUUtilization
+        stat: Average
+        dimensions: {DBInstanceIdentifier: payments-prod}

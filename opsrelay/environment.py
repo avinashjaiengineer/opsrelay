@@ -57,6 +57,16 @@ RUNBOOKS: dict[str, str] = {
     ),
 }
 
+
+def find_runbook(topic: str) -> str:
+    t = topic.lower()
+    for key, text in RUNBOOKS.items():
+        words = key.replace("-", " ").split()
+        if key in t or any(w in t for w in words) or t in text.lower():
+            return text
+    return "No matching runbook. Available: " + ", ".join(RUNBOOKS)
+
+
 SEED_SERVICES: list[Record] = [
     {
         "name": "web-frontend",
@@ -307,12 +317,7 @@ class SimulatedEnvironment(Environment):
         return self._svc(service)["deployments"][-5:]
 
     def runbook(self, topic: str) -> str:
-        t = topic.lower()
-        for key, text in RUNBOOKS.items():
-            words = key.replace("-", " ").split()
-            if key in t or any(w in t for w in words) or t in text.lower():
-                return text
-        return "No matching runbook. Available: " + ", ".join(RUNBOOKS)
+        return find_runbook(topic)
 
     # Action
     def reconcile(self, action: str, service: str, params: Record, idempotency_key: str) -> str:
@@ -358,6 +363,16 @@ class SimulatedEnvironment(Environment):
 
 
 def get_environment(store: Store) -> Environment:
+    from .config import get_settings
+
+    settings = get_settings()
+    if settings.environment == "aws":
+        from .connectors.aws import AwsEnvironment
+
+        return AwsEnvironment.from_settings(settings.service_catalog, settings.aws_region)
     env = SimulatedEnvironment(store)
-    env.seed()
+    # Only the coordinator seeds the simulation (single-process runs are the coordinator), so
+    # specialist runtimes need no write access to service records (see infra/stack.py).
+    if settings.role == "coordinator":
+        env.seed()
     return env
