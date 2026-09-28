@@ -209,10 +209,11 @@ export, an evaluation suite and replay, Slack/Teams/PagerDuty/Jira. Still open:
 
 - **More sources and connectors:** Datadog and Kubernetes events, PagerDuty as an alert source;
   EKS, your deploy tool, a CMDB; ServiceNow.
-- **Richer correlation:** across dependent services (the CMDB graph), not only the same service.
+- **Richer correlation:** more than one hop through the dependency graph, and time-based grouping
+  of alerts that arrive together without a known dependency (one hop is done).
 - **Intelligence:** a model per agent chosen by eval scores; eval cases from real incidents;
   retrieval on a managed vector store past a few thousand memories.
-- **Console:** server-sent events instead of polling; a React/TypeScript console; Teams approvals
-  through a Teams bot (today Teams links to the dashboard).
+- **Console:** push updates (WebSockets through API Gateway) instead of fingerprint polling; a
+  React/TypeScript console; Teams approvals through a Teams bot (today Teams links to the dashboard).
 - **Operations:** multi-tenant isolation, disaster recovery, dashboards and alarms on the exported
   metrics.

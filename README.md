@@ -371,7 +371,9 @@ Alertmanager -----> webhook POST /alerts, or SNS --> SQS ------^
   via SNS, and Alertmanager v4 webhooks (`opsrelay/intake/alerts.py`).
 - **Deduplication:** a repeat of an open incident's alert (same alarm ARN or Alertmanager
   fingerprint) is counted on that incident. **Correlation:** a new alert on a service with an open
-  incident, within `OPSRELAY_CORRELATION_WINDOW_MINUTES`, is attached to it. **Resolved** alerts are
+  incident, within `OPSRELAY_CORRELATION_WINDOW_MINUTES`, is attached to it, and so is an alert on
+  a direct dependency either way (from the service catalog): a downstream symptom, or a possible
+  root cause that diagnostics is told to check. **Resolved** alerts are
   noted; verification still decides. Race-free: the fingerprint is claimed before the incident is
   created.
 - **Where alerts come in:** `OPSRELAY_INTAKE_QUEUE_URL` (an SQS consumer, for EC2 or `opsrelay up`),

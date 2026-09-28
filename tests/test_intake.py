@@ -212,3 +212,25 @@ def test_sqs_consumer_routes_and_leaves_bad_messages_for_the_dlq(service, monkey
         assert {i["service"] for i in service.list_incidents()} == {"checkout-api", "auth-service"}
         attrs = sqs.get_queue_attributes(QueueUrl=url, AttributeNames=["ApproximateNumberOfMessagesNotVisible"])
         assert attrs["Attributes"]["ApproximateNumberOfMessagesNotVisible"] == "1"  # the garbage, not deleted
+
+
+def test_alerts_on_dependent_services_are_correlated(service):
+    # checkout-api depends on redis-cache (simulated CMDB); inventory-service too.
+    [cache] = service.ingest(alertmanager(alertname="CacheTimeouts", service="redis-cache", fingerprint="r1"))
+    assert cache["outcome"] == "created"
+    [checkout] = service.ingest(alertmanager(alertname="High5xx", service="checkout-api", fingerprint="c1"))
+    assert (checkout["outcome"], checkout["incident_id"]) == ("correlated", cache["incident_id"])
+    incident = service.store.get_incident(cache["incident_id"])
+    assert incident["related_services"] == ["checkout-api"]
+    [event] = [e for e in service.store.list_events(cache["incident_id"]) if e["kind"] == "alert.correlated"]
+    assert "checkout-api depends on redis-cache, which has an open incident" in event["message"]
+    [unrelated] = service.ingest(alertmanager(alertname="DiskFull", service="payments-db", fingerprint="p1"))
+    assert unrelated["outcome"] == "created"  # redis-cache and payments-db aren't linked
+
+
+def test_an_alert_on_a_dependency_is_flagged_as_a_possible_cause(service):
+    [checkout] = service.ingest(alertmanager(alertname="High5xx", service="checkout-api", fingerprint="c2"))
+    [cache] = service.ingest(alertmanager(alertname="CacheTimeouts", service="redis-cache", fingerprint="r2"))
+    assert (cache["outcome"], cache["incident_id"]) == ("correlated", checkout["incident_id"])
+    [event] = [e for e in service.store.list_events(checkout["incident_id"]) if e["kind"] == "alert.correlated"]
+    assert "checkout-api depends on redis-cache: redis-cache may be the cause" in event["message"]

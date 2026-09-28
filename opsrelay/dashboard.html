@@ -311,6 +311,7 @@ function summaryCard(i) {
     ["Outcome", ver.summary ? `${ver.recovered ? "✓ Recovered" : "✗ Not recovered"}: ${esc(ver.summary)}` : ""],
     ["Failure", esc(i.failure_reason || "")],
     ["Escalation", esc(i.escalation_reason || "")],
+    ["Related", (i.related_services || []).length ? `alerts also on ${i.related_services.map(esc).join(", ")} (correlated through dependencies)` : ""],
   ].filter(([, v]) => v);
   const body = rows.length
     ? `<dl class="facts">${rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl>`

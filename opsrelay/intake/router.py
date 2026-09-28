@@ -5,6 +5,10 @@ For each alert:
     firing, fingerprint of an open incident   -> duplicate: counted on that incident
     firing, same service as an open incident
       opened within the correlation window    -> correlated: attached to that incident
+    firing, a direct dependency (either way,
+      from the service catalog) of a service
+      with such an incident                   -> correlated too, with the dependency as the reason
+                                                 (a downstream symptom, or a possible root cause)
     firing, otherwise                         -> a new incident, its coordination queued as a job
     resolved                                  -> noted on the incident (verification still decides)
 
@@ -34,10 +38,11 @@ def _open(incident: Record | None) -> bool:
     return incident is not None and incident["status"] not in TERMINAL
 
 
-def _attach(svc, incident: Record, alert: Alert, kind: str, message: str) -> None:  # noqa: ANN001
+def _attach(svc, incident: Record, alert: Alert, kind: str, message: str, **fields) -> None:  # noqa: ANN001, ANN003
     fingerprints = incident.get("fingerprints") or []
     svc.store.update_incident(
         incident["id"],
+        **fields,
         alerts_count=int(incident.get("alerts_count") or 1) + 1,
         last_alert_at=now_iso(),
         fingerprints=fingerprints if alert.fingerprint in fingerprints else [*fingerprints, alert.fingerprint],
@@ -53,14 +58,32 @@ def _attach(svc, incident: Record, alert: Alert, kind: str, message: str) -> Non
     )
 
 
-def _correlate(svc, alert: Alert) -> Record | None:  # noqa: ANN001
+def _depends_on(svc, service: str) -> set[str]:  # noqa: ANN001
+    try:
+        return set(svc.env.service_info(service).get("depends_on") or [])
+    except KeyError:
+        return set()
+
+
+def _correlate(svc, alert: Alert) -> tuple[Record, str] | None:  # noqa: ANN001
+    """An open, recent incident this alert belongs to, and why: the same service, else a direct
+    dependency in either direction."""
     if not alert.service:
         return None
     window = timedelta(minutes=get_settings().correlation_window_minutes)
     cutoff = (datetime.now(UTC) - window).isoformat(timespec="milliseconds")
-    for incident in svc.store.list_incidents(limit=200):
-        if _open(incident) and incident.get("service") == alert.service and incident["created_at"] >= cutoff:
-            return incident
+    recent = [
+        i for i in svc.store.list_incidents(limit=200) if _open(i) and i.get("service") and i["created_at"] >= cutoff
+    ]
+    for incident in recent:
+        if incident["service"] == alert.service:
+            return incident, "same service, open incident"
+    upstream = _depends_on(svc, alert.service)
+    for incident in recent:
+        if incident["service"] in upstream:
+            return incident, f"{alert.service} depends on {incident['service']}, which has an open incident"
+        if alert.service in _depends_on(svc, incident["service"]):
+            return incident, f"{incident['service']} depends on {alert.service}: {alert.service} may be the cause"
     return None
 
 
@@ -103,8 +126,9 @@ def _route(svc, alert: Alert, queue: bool) -> Record:  # noqa: ANN001
             # Another copy of this alert claimed the fingerprint and is creating the incident now.
             return {"outcome": "deduplicated", "incident_id": key["incident_id"], "note": "incident being created"}
 
-        related = _correlate(svc, alert)
-        if related is not None:
+        correlation = _correlate(svc, alert)
+        if correlation is not None:
+            related, reason = correlation
             if key is None:
                 claimed = store.put_record(new_record(KEY, alert.fingerprint, "open", incident_id=related["id"]))
             else:
@@ -113,7 +137,15 @@ def _route(svc, alert: Alert, queue: bool) -> Record:  # noqa: ANN001
                 )
             if not claimed:
                 continue  # someone else just claimed this fingerprint: look again
-            _attach(svc, related, alert, "alert.correlated", f"Correlated: {alert.title} (same service, open incident)")
+            others = [s for s in [*(related.get("related_services") or []), alert.service] if s != related["service"]]
+            _attach(
+                svc,
+                related,
+                alert,
+                "alert.correlated",
+                f"Correlated: {alert.title} ({reason})",
+                related_services=list(dict.fromkeys(others)),
+            )
             return {"outcome": "correlated", "incident_id": related["id"]}
 
         planned = new_incident_id()
