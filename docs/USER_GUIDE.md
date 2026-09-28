@@ -2,140 +2,153 @@
 
 What OpsRelay looks like in use, step by step, why it's useful, and where it could go next.
 
-Every screenshot below is from a real run: `opsrelay up` with the agents on **Amazon Nova 2 Lite**
-through Amazon Bedrock. Nothing was scripted or edited; the agents wrote every sentence you see.
-(To install and start OpsRelay, see [WALKTHROUGH.md](WALKTHROUGH.md).)
-
-> The screenshots are from v0.1. Since v0.2 the same pages also show the incident's **lifecycle
-> bar**, a **Why the agents think this happened** panel with evidence and confidence, the
-> **policy engine's decision** on each approval card, and an **audit chain verified** badge; see
-> [What v0.2 added](#what-v02-added).
+Every screenshot below is from a real run of v0.2: `opsrelay up` with the agents on **Amazon
+Nova 2 Lite** through Amazon Bedrock. Nothing was scripted or edited; the agents wrote every
+sentence you see. (To install and start OpsRelay, see [WALKTHROUGH.md](WALKTHROUGH.md).)
 
 ![The whole workflow: trigger, investigate, approve, resolve](images/workflow.gif)
 
 ## Contents
 
 - [The workflow in pictures](#the-workflow-in-pictures)
-  - [1. The dashboard](#1-the-dashboard)
+  - [1. The console](#1-the-console)
   - [2. An alert fires and the agents take over](#2-an-alert-fires-and-the-agents-take-over)
-  - [3. A person decides](#3-a-person-decides)
-  - [4. Every step is on the record](#4-every-step-is-on-the-record)
+  - [3. What happened, and why](#3-what-happened-and-why)
+  - [4. What OpsRelay wants to do, and who must approve it](#4-what-opsrelay-wants-to-do-and-who-must-approve-it)
   - [5. Fixed, verified and written up](#5-fixed-verified-and-written-up)
-  - [6. When the agents get it wrong](#6-when-the-agents-get-it-wrong)
-- [What v0.2 added](#what-v02-added)
+  - [6. What the agents actually did](#6-what-the-agents-actually-did)
+  - [7. When a person says no](#7-when-a-person-says-no)
+  - [8. When the policy says a person isn't needed](#8-when-the-policy-says-a-person-isnt-needed)
+- [How the governance layer works](#how-the-governance-layer-works)
 - [How to use it](#how-to-use-it)
 - [Why it's useful](#why-its-useful)
 - [How it could be improved](#how-it-could-be-improved)
 
 ## The workflow in pictures
 
-### 1. The dashboard
+The incident panel on the right answers an operator's questions in the order they ask them:
+**what happened → why → what OpsRelay wants to do → does a person need to approve it → what the
+agents did → can the record be trusted → what we learned.**
 
-![Dashboard with all services healthy](images/01-dashboard.jpg)
+### 1. The console
 
-Everything on one page:
+![Console with all services healthy](images/01-dashboard.jpg)
 
 - **Trigger a scenario** injects a realistic fault into the simulated environment, as if an alert
   had fired: a bad deploy, a memory leak or a traffic spike.
 - **You (approver)** is your name. Every approval or rejection is recorded with it.
 - **Service health** shows the six simulated services, their error rate and p99 latency.
-- **Incidents** lists every incident and its status.
+- **Incidents** lists every incident with its status and severity.
 
 ### 2. An alert fires and the agents take over
 
-![The coordinator delegates to triage and diagnostics](images/02-agents-working.jpg)
+![Incident under investigation, with placeholders for the diagnosis and remediation](images/02-investigating.jpg)
 
-Clicking **Bad deploy** breaks `checkout-api` (health turns *degraded*: 23% errors, 950 ms p99)
-and opens an incident from the alert. From here nobody touches anything:
+Clicking **Bad deploy** breaks `checkout-api` (23% errors, 950 ms p99) and opens an incident.
+The header shows its status, id, a **✓ Audit verified** badge and severity, and the **lifecycle
+bar** shows where it is: `open → triaging → investigating → awaiting approval → remediating →
+verifying → resolved`. The coordinator has sent it to the **triage** agent, which returned a typed
+`TriageResult` (SEV1, customer impact, 95% confidence); the **Incident summary** shows it.
+Diagnosis and remediation show what they're waiting for.
 
-1. The **coordinator** agent sends the incident to the **triage** agent over A2A.
-2. **Triage** reads service health and the service catalog, rates it **SEV1** (checkout is a
-   tier-1 service) and reports back.
-3. The coordinator hands it to **diagnostics** to find the root cause.
+### 3. What happened, and why
 
-Each specialist is a separate A2A server, the same as when deployed on Bedrock AgentCore.
+![Awaiting approval: summary and diagnosis](images/03-awaiting-approval.jpg)
 
-### 3. A person decides
+About 40 seconds after the alert, the incident is **awaiting approval**. The **diagnostics** agent
+submitted a `DiagnosisResult`: a root cause, the component at fault, and a confidence of 95%.
 
-![Root cause, evidence and a pending rollback waiting for approval](images/03-approval-requested.jpg)
+![Diagnosis with every piece of evidence and its source](images/04-diagnosis-evidence.jpg)
 
-About 30 seconds after the alert:
+Every piece of **evidence** carries its source (metrics, logs, deployment, CMDB), so an operator
+can check the reasoning at a glance: the error rate, the exception in the logs, the deploy that
+lined up with the incident, and healthy dependencies ruling out other causes.
 
-- **Diagnostics** has found the root cause (release 2.14.0 introduced a `NullPointerException`)
-  and listed its evidence: the error rate, the log line, the deploy time lining up with the
-  incident, and healthy dependencies.
-- **Remediation** looked up the `bad-deploy` runbook and proposed `rollback_deployment`,
-  rated **high risk** because checkout is tier 1.
+### 4. What OpsRelay wants to do, and who must approve it
 
-The yellow card is the **human approval gate**. The agents cannot run the rollback themselves:
-remediation only submits a typed proposal. The **policy engine** decides whether it may run and
-whether a person must approve it (here: yes, because rollbacks always need approval and the risk
-is high), and the platform executes it only after a person clicks **Approve**. All of that is
-enforced in code, not in a prompt.
+![Proposed remediation with policy decision and approve/reject buttons](images/05-remediation-approval.jpg)
 
-### 4. Every step is on the record
-
-![Agent timeline with every tool call](images/04-timeline-tool-calls.jpg)
-
-The **Agent timeline** shows each A2A request and response between agents. Tick
-**show tool calls** to also see every tool each agent called and its exact input. This is the
-audit log: it's append-only and records who (or which agent) did what, and when.
+The **remediation** agent proposed `rollback_deployment` to `target_version=2.13.4`, with its own
+risk estimate, a rollback plan and its reasoning. The agent can't run it. The **policy engine**
+evaluated the proposal first and says why a person is needed: *rollback_deployment always requires
+approval* and *high risk requires a person*. Only then do **Reject** and **Approve remediation**
+appear.
 
 ### 5. Fixed, verified and written up
 
-![Rollback executed, incident resolved](images/05-resolved.jpg)
+![Resolved: every lifecycle step done and recovery verified](images/06-resolved.jpg)
 
-After **Approve**:
+After **Approve remediation**, the incident walks through `remediating` and `verifying` to
+`resolved`. The **verification** agent, not the one that proposed the fix, checked the metrics
+(0.2% errors, 180 ms), and the platform cross-checked its claim against live metrics. The outcome
+appears in the summary.
 
-1. The platform rolls `checkout-api` back to 2.13.4, recorded as *Decided by Jane (on-call SRE)*.
-2. The **verification** agent (not the one that proposed the fix) checks the metrics and confirms
-   recovery (0.2% errors, 180 ms); the platform cross-checks its claim against live metrics.
-3. **Communications** posts an internal update and a customer-facing update, then resolves the
-   incident.
+![Executed remediation, decided by the approver](images/07-remediation-executed.jpg)
 
-![Postmortem written by the communications agent](images/06-postmortem.jpg)
+The remediation card records who decided and what happened: *Decided by Jane (on-call SRE) · Rolled
+checkout-api back to 2.13.4*. The execution engine ran it once, under an idempotency key, so a
+retry could never roll back twice. Below it, the timeline shows the **latest events only**:
+communications posted an internal update and a customer update, then submitted the postmortem.
 
-It also writes a **blameless postmortem**: summary, impact, timeline, root cause, resolution
-and follow-ups. From alert to postmortem took about two and a half minutes, most of it waiting
-for the human.
+### 6. What the agents actually did
 
-### 6. When the agents get it wrong
+![Full timeline with tool calls: approval, execution, verification](images/08-timeline-tool-calls.jpg)
 
-The approval gate isn't a formality. In the **Memory leak** run, the agents made a mistake:
+Click **Show all events** and tick **show tool calls** to see everything: the approval, each
+status change (in bold), the platform's execution with its parameters, and the verification agent's
+typed submission.
 
-![Agent proposes scaling out a memory leak](images/07-bad-proposal.jpg)
+![Audit trail and postmortem](images/09-audit-postmortem.jpg)
 
-Diagnostics correctly found a memory leak in the session cache, and remediation's own
-rationale says *the runbook recommends a restart*. But it proposed `scale_service` to 6
-replicas instead. More replicas of a leaking service just leak more memory.
+The **Audit trail** confirms the log hasn't been altered: each of the 63 events stores the hash of
+the one before it, so a changed or deleted event breaks the chain (`opsrelay audit <id>` checks it
+from the command line). The **Postmortem** was submitted as a typed `Postmortem` with summary,
+impact, timeline, root cause, resolution, contributing factors, detection and action items.
 
-The approver clicks **Reject** with the reason *"Scaling out won't fix a leak; runbook says
-restart"*. Nothing runs. The incident moves from `awaiting_approval` to `escalated`, the only
-move the lifecycle allows after a rejection, and the reason is recorded as the escalation
-reason, attributed to the approver. Communications posts an internal update so the owning team
-knows to act. Wrong proposals stop at a person, and the person's reason stays on the record.
+### 7. When a person says no
 
-## What v0.2 added
+![The policy raised the agent's risk estimate](images/10-policy-raises-risk.jpg)
 
-v0.2 turned the approval gate into a full governance layer. Every piece is enforced by the
-platform, whatever the model does:
+In the **Memory leak** run, remediation proposed `restart_service` and rated it *medium* risk. The
+policy raised it to **high** (*auth-service is tier 1*), and the card says so: *agent said medium;
+policy raised it*. Agents can raise a risk rating but never lower it.
+
+![Rejected and escalated, with the reason on the record](images/11-rejected-escalated.jpg)
+
+The approver clicked **Reject**: *"Not during the peak login window; restart after 18:00"*.
+Nothing ran. The incident moved from `awaiting approval` straight to `escalated`, the only legal
+move after a rejection, and the lifecycle bar shows the path it actually took. The reason is kept as
+the escalation reason, attributed to the approver, and communications posted an internal update.
+
+### 8. When the policy says a person isn't needed
+
+![Low-risk scaling allowed by policy and executed](images/12-policy-allow.jpg)
+
+In the **Traffic spike** run, remediation proposed scaling `inventory-service` from 2 to 4
+replicas. Scaling a tier-2 service is **low** risk, and the policy says it doesn't need a person
+(**ALLOW**), so the platform approved it on the policy's behalf (*Decided by policy:v1-…*), ran
+it, verified recovery and resolved the incident about a minute after the alert. The same policy
+file decides this for every action; change it and the behavior changes, with no code changes.
+
+## How the governance layer works
+
+Every piece is enforced by the platform, whatever the model does:
 
 - **A state machine.** Incidents move only `open → triaging → investigating → awaiting_approval →
   remediating → verifying → resolved`, or to `failed` and `escalated`. Every move is checked and
   written atomically; nothing can change status any other way.
 - **Typed agent contracts.** Each agent submits a pydantic-validated result (`TriageResult`,
   `DiagnosisResult` with evidence and confidence, `RemediationProposal` with a rollback plan,
-  `VerificationResult`, `Postmortem`). Invalid output is sent back to the agent with the errors.
-  Each agent acts only in its own states and gets only its own tools.
+  `VerificationResult`, `Postmortem`). Invalid output goes back to the agent with the errors. Each
+  agent acts only in its own states and gets only its own tools.
 - **A policy engine** (`opsrelay/policies.yaml`): ALLOW, APPROVAL_REQUIRED or DENY for every
   proposal, with reasons. `delete_database` is never allowed; scaling a tier-2 service runs without
   a person; a diagnosis below 70% confidence can't be acted on, and below 90% always needs a person.
 - **Propose, approve, execute and verify are separate.** A dedicated verification agent judges the
   outcome, and the execution engine runs each action once per idempotency key.
-- **Resilience.** Retries with backoff, a circuit breaker per agent, a dead-letter queue, and
-  escalation to a person when an agent stays down.
-- **A tamper-evident audit log.** Each event carries the hash of the one before it;
-  `opsrelay audit <incident>` finds the first altered or missing event.
+- **Resilience.** Timeouts, retries with backoff, a circuit breaker per agent, a dead-letter queue,
+  and escalation to a person when an agent stays down.
+- **A tamper-evident audit log.** Each event carries the hash of the one before it.
 
 ## How to use it
 
@@ -143,9 +156,11 @@ platform, whatever the model does:
 
 1. Enter your name under **You (approver)**.
 2. Click a scenario.
-3. Wait for the yellow **Human approval** card (usually 20 to 40 seconds with a real model).
-4. Read the root cause, evidence and rationale. Then **Approve**, or **Reject** with a reason.
-5. Watch it verify and resolve. Read the postmortem at the bottom.
+3. Wait for the yellow **Proposed remediation** card (usually 30 to 60 seconds with a real model).
+4. Read the diagnosis, the evidence and the policy engine's reasons. Then **Approve remediation**,
+   or **Reject** with a reason.
+5. Watch it verify and resolve. Read the postmortem at the bottom; the audit trail above it
+   shows whether the record is intact.
 
 **From the command line** (same coordinator, same incidents):
 
@@ -175,7 +190,8 @@ the CDK stack in `infra/` (API only, no dashboard).
   deploy times and finding the runbook is the slow part of the first 15 minutes of an incident.
   The agents had a root cause, evidence and a proposed fix about 30 seconds after the alert.
 - **People stay in control.** Agents investigate and propose; only a person can make a change.
-  The run in [section 6](#6-when-the-agents-get-it-wrong) shows why that matters.
+  The policy engine decides which actions need a person, and a rejection stops everything
+  ([section 7](#7-when-a-person-says-no)).
 - **Runbooks get used.** Remediation starts from the runbook for the incident type, so fixes are
   consistent no matter who is on call.
 - **A complete audit trail.** Every agent handoff, tool call and human decision is recorded with
@@ -195,12 +211,12 @@ what it would take to use it on real systems.
 
 Ideas grouped by what they'd fix. Typed contracts, the policy engine, confidence thresholds,
 a proposal limit, a verification agent, idempotent execution, retries and dead letters, and a
-hash-chained audit log are already done (see [What v0.2 added](#what-v02-added)).
+hash-chained audit log are already done (see [How the governance layer works](#how-the-governance-layer-works)).
 
 **Safety and correctness**
 
-- **Flag proposals that go against the runbook.** In the memory-leak run the agent proposed
-  scaling when the runbook said restart. The platform could compare each proposal with the
+- **Flag proposals that go against the runbook.** In an earlier memory-leak run the agent
+  proposed scaling when the runbook said restart. The platform could compare each proposal with the
   runbook's recommended action and show a warning on the approval card, or require a second
   approver when they differ.
 - **Evaluate models against the scenarios.** A small evaluation suite could run every scenario

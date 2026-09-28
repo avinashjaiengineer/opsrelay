@@ -70,19 +70,21 @@ If port 8080 is in use: `opsrelay up --port 8090`, then open http://127.0.0.1:80
    resolved. The coordinator hands the incident over A2A to:
    - **triage**, which submits a typed `TriageResult` (SEV1, because `checkout-api` is tier 1),
    - **diagnostics**, which submits a `DiagnosisResult`: root cause, evidence with sources and a
-     confidence, shown under **Why the agents think this happened**,
+     confidence, shown in the **Diagnosis** section with each piece of **Evidence**,
    - **remediation**, which proposes `rollback_deployment` with a rollback plan.
-4. **Read the policy decision.** The card under **Remediation · policy · approval** shows what the
+4. **Read the policy decision.** The **Proposed remediation** card shows what the
    policy engine decided and why (for example *rollback_deployment always requires approval*,
    *high risk requires a person*). Nothing has touched the service yet.
 5. **Decide.**
-   - Click **Approve**: the platform runs the rollback once, the **verification** agent checks the
+   - Click **Approve remediation**: the platform runs the rollback once, the **verification** agent checks the
      service recovered, and communications posts updates and writes the **Postmortem**. Status
      ends at **resolved**.
    - Click **Reject** (optionally give a reason): nothing is executed, and the incident is
      **escalated** to the owning team.
-6. **Tick "show tool calls"** to see every tool each agent called and its input. The green
-   **audit chain verified** badge means no event in the incident's log has been altered.
+6. **Look at what the agents did.** The **Agent timeline** shows the latest events; click
+   **Show all events** for the full history, and tick **show tool calls** to see every tool each
+   agent called and its input. The green
+   **✓ Audit verified** badge (and the **Audit trail** section) means no event in the log was altered.
 
 Try **Traffic spike** too: scaling a tier-2 service is low risk, so the policy lets it run without
 a person, and the agents resolve the incident on their own.
