@@ -1,11 +1,15 @@
 #!/bin/bash
 # EC2 user data (Amazon Linux 2023): install OpsRelay and run `opsrelay up` as a systemd service.
 # The agents call Amazon Bedrock with the instance role's credentials; no keys on the box.
-# The dashboard has no login: restrict port 8080 to trusted IPs in the security group.
+# Sign-in: set AUTH_MODE=dev and DEV_USERS to a Secrets Manager ARN holding the users file
+# (`opsrelay users add`; token hashes only), and let the instance role read that secret.
+# Without it the dashboard has no login: restrict port 8080 to trusted IPs in the security group.
 set -euxo pipefail
 
 REPO_URL="${REPO_URL:-https://github.com/avinashjaiengineer/opsrelay.git}"
 MODEL_ID="${MODEL_ID:-global.amazon.nova-2-lite-v1:0}"
+AUTH_MODE="${AUTH_MODE:-none}"
+DEV_USERS="${DEV_USERS:-}"
 REGION="$(TOKEN=$(curl -sX PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds: 60') \
   && curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/placement/region)"
 
@@ -30,6 +34,8 @@ WorkingDirectory=/opt/opsrelay
 Environment=OPSRELAY_MODEL_PROVIDER=bedrock
 Environment=OPSRELAY_BEDROCK_MODEL_ID=${MODEL_ID}
 Environment=OPSRELAY_AWS_REGION=${REGION}
+Environment=OPSRELAY_AUTH_MODE=${AUTH_MODE}
+Environment=OPSRELAY_DEV_USERS=${DEV_USERS}
 ExecStart=/opt/opsrelay/venv/bin/opsrelay up --host 0.0.0.0 --no-browser
 Restart=on-failure
 RestartSec=5
