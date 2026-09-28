@@ -10,10 +10,17 @@ after a restart, or another replica) takes the job over. Re-running a coordinati
 the coordinator acts on the incident's current state and never repeats a step that succeeded.
 A job that keeps failing is dead-lettered and its incident handed to a person.
 
-The worker also runs `approvals.recover` periodically, finishing remediations whose executor
-stopped mid-action.
+Two ways to run jobs:
+
+- A worker thread in the coordinator process polls the store (local, EC2, Docker Compose). It also
+  runs `approvals.recover` periodically.
+- With OPSRELAY_JOB_QUEUE_URL set (AWS), enqueuing also sends the job id to an SQS queue; a Lambda
+  consumes it and calls the coordinator's `run_job` action, which runs that job synchronously. No
+  long-running thread is needed; a scheduled Lambda calls `recover`, which also re-queues jobs
+  whose lease expired. SQS retries and its dead-letter queue sit on top of the job's own lease.
 """
 
+import json
 import logging
 import os
 import socket
@@ -48,34 +55,60 @@ def enqueue(store: Store, incident_id: str, prompt: str, *, action: str = "coord
     )
     store.put_record(job)
     store.record(incident_id, "platform", "job.queued", f"{action} queued ({job['id']})", {"job_id": job["id"]})
+    _send_to_queue(job["id"])
     return job
+
+
+def _send_to_queue(job_id: str) -> None:
+    settings = get_settings()
+    if settings.job_queue_url:
+        import boto3
+
+        boto3.client("sqs", region_name=settings.aws_region).send_message(
+            QueueUrl=settings.job_queue_url, MessageBody=json.dumps({"job_id": job_id})
+        )
+
+
+def requeue_expired(store: Store) -> list[str]:
+    """Re-send claimable jobs (still queued, or their worker's lease expired) to the SQS queue."""
+    now = time.time()
+    ids = [j["id"] for j in store.list_records(KIND) if claimable(j, now) and j["attempts"] < j["max_attempts"]]
+    for job_id in ids:
+        _send_to_queue(job_id)
+    return ids
 
 
 def claimable(job: Record, now: float) -> bool:
     return job["status"] == "queued" or (job["status"] == "running" and job.get("lease_until", 0) < now)
 
 
-def claim_next(store: Store, owner: str) -> Record | None:
+def claim(store: Store, job: Record, owner: str) -> Record | None:
+    """Claim one job if it's claimable (queued, or running with an expired lease)."""
     now = time.time()
+    if not claimable(job, now):
+        return None
     lease = get_settings().job_lease_seconds
-    for job in reversed(store.list_records(KIND)):  # oldest first
-        if not claimable(job, now):
-            continue
-        taken = store.move_record(
-            KIND,
-            job["id"],
-            job["rev"],
-            {"status": "running", "owner": owner, "lease_until": now + lease, "attempts": job["attempts"] + 1},
+    taken = store.move_record(
+        KIND,
+        job["id"],
+        job["rev"],
+        {"status": "running", "owner": owner, "lease_until": now + lease, "attempts": job["attempts"] + 1},
+    )
+    if taken and job["status"] == "running":
+        store.record(
+            job["incident_id"],
+            "platform",
+            "job.recovered",
+            f"{job['action']} taken over from {job.get('owner')} after its lease expired",
+            {"job_id": job["id"], "previous_owner": job.get("owner")},
         )
+    return taken
+
+
+def claim_next(store: Store, owner: str) -> Record | None:
+    for job in reversed(store.list_records(KIND)):  # oldest first
+        taken = claim(store, job, owner)
         if taken:
-            if job["status"] == "running":
-                store.record(
-                    job["incident_id"],
-                    "platform",
-                    "job.recovered",
-                    f"{job['action']} taken over from {job.get('owner')} after its lease expired",
-                    {"job_id": job["id"], "previous_owner": job.get("owner")},
-                )
             return taken
     return None
 
@@ -134,6 +167,24 @@ class Worker:
         job = claim_next(svc.store, self.owner)
         if job is None:
             return False
+        self._run(svc, job)
+        return True
+
+    def run_job(self, job_id: str) -> Record:
+        """Run one specific job now, if it's claimable (the SQS path). Returns its outcome."""
+        svc = self.service_factory()
+        job = svc.store.get_record(KIND, job_id)
+        if job is None:
+            return {"job_id": job_id, "status": "unknown"}
+        if job["status"] in ("done", "failed"):
+            return {"job_id": job_id, "status": job["status"]}
+        taken = claim(svc.store, job, self.owner)
+        if taken is None:
+            return {"job_id": job_id, "status": "in_progress", "owner": job.get("owner")}
+        self._run(svc, taken)
+        return {"job_id": job_id, "status": svc.store.get_record(KIND, job_id)["status"]}
+
+    def _run(self, svc, job: Record) -> None:  # noqa: ANN001
         token = self.on_busy(job) if self.on_busy else None
         beat = threading.Event()
         heartbeat = threading.Thread(target=self._heartbeat, args=(svc.store, job, beat), daemon=True)
@@ -151,7 +202,6 @@ class Worker:
         finally:
             if self.on_idle:
                 self.on_idle(token)
-        return True
 
     def _heartbeat(self, store: Store, job: Record, stop: threading.Event) -> None:
         lease = get_settings().job_lease_seconds

@@ -33,6 +33,8 @@ ACTIONS: dict[str, frozenset[str]] = {
     "list_policies": AUDIT,
     "open_incident": OPERATE,
     "ingest_alert": OPERATE,
+    "run_job": OPERATE,
+    "recover": OPERATE,
     "simulate": OPERATE,
     "test_policy": TEST_POLICY,
     "propose_policy": POLICY_ADMIN,

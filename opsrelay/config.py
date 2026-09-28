@@ -68,6 +68,9 @@ class Settings(BaseSettings):
     # worker stops, another takes the job over once the lease expires. A job that fails
     # `job_max_attempts` times is dead-lettered and its incident handed to a person.
     job_lease_seconds: float = 900
+    # On AWS: an SQS queue that carries job ids to a Lambda, which calls the coordinator's run_job
+    # action (see opsrelay.jobs). Empty: a worker thread in the coordinator polls the store.
+    job_queue_url: str = ""
     job_max_attempts: int = 3
     worker_poll_seconds: float = 1.0
     recovery_interval_seconds: float = 30

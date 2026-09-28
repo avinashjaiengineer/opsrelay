@@ -92,3 +92,52 @@ def test_state_table(template):
         "AWS::DynamoDB::GlobalTable",
         {"KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "sk", "KeyType": "RANGE"}]},
     )
+
+
+def test_event_boundary(template):
+    template.resource_count_is("AWS::SQS::Queue", 4)  # alert + job queues, each with a DLQ
+    template.has_resource_properties(
+        "AWS::Events::Rule",
+        {"EventPattern": {"source": ["aws.cloudwatch"], "detail-type": ["CloudWatch Alarm State Change"]}},
+    )
+    template.has_resource_properties("AWS::Events::Rule", {"ScheduleExpression": "rate(5 minutes)"})
+    modes = sorted(
+        f["Properties"]["Environment"]["Variables"]["MODE"]
+        for f in template.find_resources("AWS::Lambda::Function").values()
+    )
+    assert modes == ["intake", "jobs", "recover"]
+    template.has_resource_properties(
+        "AWS::Lambda::EventSourceMapping", {"FunctionResponseTypes": ["ReportBatchItemFailures"]}
+    )
+    for queue in template.find_resources("AWS::SQS::Queue").values():
+        props = queue["Properties"]
+        if "RedrivePolicy" in props:
+            assert props["RedrivePolicy"]["maxReceiveCount"] == 5
+            assert props["VisibilityTimeout"] > 900  # longer than the Lambdas' 15 minutes
+    [coordinator] = [
+        r
+        for r in template.find_resources("AWS::BedrockAgentCore::Runtime").values()
+        if r["Properties"]["AgentRuntimeName"] == "opsrelay_coordinator"
+    ]
+    assert "OPSRELAY_JOB_QUEUE_URL" in coordinator["Properties"]["EnvironmentVariables"]
+
+
+def test_jwt_authorizer_needs_event_intake_off(tmp_path):
+    def synth(**context):
+        app = cdk.App(outdir=str(tmp_path / str(len(context))), context=context)
+        return OpsRelayStack(app, "Jwt", env=cdk.Environment(account="123456789012", region="us-east-1"))
+
+    url = "https://cognito-idp.us-east-1.amazonaws.com/us-east-1_x/.well-known/openid-configuration"
+    with pytest.raises(ValueError, match="either IAM or JWT"):
+        synth(jwt_discovery_url=url)
+    stack = synth(jwt_discovery_url=url, jwt_allowed_clients="client-1", event_intake="false")
+    template = assertions.Template.from_stack(stack)
+    template.resource_count_is("AWS::Lambda::Function", 0)
+    [coordinator] = [
+        r
+        for r in template.find_resources("AWS::BedrockAgentCore::Runtime").values()
+        if r["Properties"]["AgentRuntimeName"] == "opsrelay_coordinator"
+    ]
+    jwt = coordinator["Properties"]["AuthorizerConfiguration"]["CustomJWTAuthorizer"]
+    assert jwt["DiscoveryUrl"] == url and jwt["AllowedClients"] == ["client-1"]
+    assert coordinator["Properties"]["RequestHeaderConfiguration"]["RequestHeaderAllowlist"] == ["Authorization"]

@@ -16,6 +16,8 @@ Payloads are JSON objects with an "action":
     {"action": "get_contracts"}                               # lifecycle, agent contracts, transition owners
     {"action": "whoami"}                                      # the authenticated caller and roles
     {"action": "ingest_alert", "message": {...}}              # CloudWatch alarm event / SNS / Alertmanager
+    {"action": "run_job", "job_id": "job-..."}                # run one queued job now (the SQS worker path)
+    {"action": "recover"}                                     # finish interrupted work (scheduled on AWS)
     {"action": "list_policies"} / {"action": "propose_policy", "text": "<yaml>"}
     {"action": "review_policy", "version": "v2", "approve": true} / {"action": "activate_policy", "version": "v2"}
 
@@ -40,7 +42,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from .. import auth, jobs, policy_admin, rbac, secrets
+from .. import approvals, auth, jobs, policy_admin, rbac, secrets
 from ..approvals import ApprovalError
 from ..config import get_settings
 from ..intake.alerts import UnrecognizedAlert
@@ -80,6 +82,8 @@ def start_worker():  # noqa: ANN201
     settings = get_settings()
     if settings.intake_queue_url and _intake is None:
         _intake = SqsIntake(settings.intake_queue_url, service, region=settings.aws_region).start()
+    if settings.job_queue_url:
+        return None  # jobs arrive through SQS and the run_job action; no polling thread needed
     return jobs.ensure_worker(
         service,
         on_busy=lambda job: app.add_async_task(job["action"], {"incident_id": job["incident_id"], "job": job["id"]}),
@@ -220,6 +224,11 @@ def handle(payload: dict[str, Any]) -> dict[str, Any]:
         if any(r.get("job_id") for r in results):
             start_worker()
         return {"results": results}
+    if action == "run_job":
+        _require(payload, "job_id")
+        return jobs.Worker(service).run_job(payload["job_id"])
+    if action == "recover":
+        return {"remediations": approvals.recover(svc.store, svc.env), "requeued_jobs": jobs.requeue_expired(svc.store)}
     if action == "get_contracts":
         return svc.contracts()
     if action == "list_policies":

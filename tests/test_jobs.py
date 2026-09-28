@@ -1,5 +1,6 @@
 """Durable background work, and authenticated agent-to-agent calls."""
 
+import json
 import time
 
 from starlette.testclient import TestClient
@@ -92,3 +93,34 @@ def test_the_a2a_client_presents_the_token(monkeypatch):
     assert resolve_endpoint("http://triage:9000/")[2] == {"Authorization": "Bearer s3cret-token"}
     arn = "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/opsrelay_triage-x"
     assert "Authorization" not in resolve_endpoint(arn)[2]  # AgentCore calls are SigV4-signed instead
+
+
+def test_sqs_job_transport(service, monkeypatch):
+    import boto3
+    from moto import mock_aws
+
+    for key in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"):
+        monkeypatch.setenv(key, "testing")
+    with mock_aws():
+        sqs = boto3.client("sqs", region_name="us-east-1")
+        url = sqs.create_queue(QueueName="opsrelay-jobs")["QueueUrl"]
+        monkeypatch.setenv("OPSRELAY_JOB_QUEUE_URL", url)
+        get_settings.cache_clear()
+
+        service.env.inject("bad-deploy")
+        incident = service.open_incident("checkout-api 5xx", "errors", run=False)["incident"]
+        job = jobs.enqueue(service.store, incident["id"], f"New incident {incident['id']}. Coordinate the response.")
+        [message] = sqs.receive_message(QueueUrl=url)["Messages"]
+        assert json.loads(message["Body"]) == {"job_id": job["id"]}
+
+        # The Lambda calls run_job: it runs that job, synchronously, exactly once.
+        assert _worker(service).run_job(job["id"]) == {"job_id": job["id"], "status": "done"}
+        assert _worker(service).run_job(job["id"]) == {"job_id": job["id"], "status": "done"}
+        assert service.store.get_incident(incident["id"])["status"] == "awaiting_approval"
+
+        # A job whose worker died is re-sent by the scheduled recover.
+        stuck = jobs.enqueue(service.store, incident["id"], "prompt")
+        service.store.move_record(
+            "job", stuck["id"], 0, {"status": "running", "owner": "dead", "lease_until": 0.0, "attempts": 1}
+        )
+        assert jobs.requeue_expired(service.store) == [stuck["id"]]

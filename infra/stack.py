@@ -4,16 +4,32 @@ Creates:
   * a DynamoDB table shared by every agent (incidents, approvals, audit log, services)
   * five specialist AgentCore Runtimes speaking the A2A protocol
   * one coordinator AgentCore Runtime speaking HTTP, allowed to invoke the specialists
-All six run the same container image; OPSRELAY_ROLE selects the agent.
+  * the event boundary (context event_intake, default on):
+      CloudWatch alarm -> EventBridge rule -> SQS alert queue (+ DLQ) -> intake Lambda -> ingest_alert
+      Alertmanager     -> SNS topic --------^
+      job ids -> SQS work queue (+ DLQ) -> worker Lambda -> run_job
+      every 5 minutes -> recovery Lambda -> recover
+All six runtimes run the same container image; OPSRELAY_ROLE selects the agent.
+
+Inbound auth on the coordinator is IAM (SigV4) by default. Context jwt_discovery_url (and
+jwt_allowed_clients) switches it to an AgentCore JWT authorizer and forwards the Authorization
+header to the app; AgentCore accepts one inbound method, so that requires event_intake=false.
 """
 
 from pathlib import Path
 
-from aws_cdk import CfnOutput, RemovalPolicy, Stack
+from aws_cdk import CfnOutput, Duration, RemovalPolicy, Stack
 from aws_cdk import aws_bedrockagentcore as agentcore
 from aws_cdk import aws_dynamodb as dynamodb
 from aws_cdk import aws_ecr_assets as ecr_assets
+from aws_cdk import aws_events as events
+from aws_cdk import aws_events_targets as targets
 from aws_cdk import aws_iam as iam
+from aws_cdk import aws_lambda as lambda_
+from aws_cdk import aws_lambda_event_sources as sources
+from aws_cdk import aws_sns as sns
+from aws_cdk import aws_sns_subscriptions as subscriptions
+from aws_cdk import aws_sqs as sqs
 from constructs import Construct
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -57,6 +73,13 @@ class OpsRelayStack(Stack):
         model_provider = ctx("model_provider") or "bedrock"
         model_id = ctx("model_id") or "global.amazon.nova-2-lite-v1:0"
         retain_data = str(ctx("retain_data") or "true").lower() == "true"
+        event_intake = str(ctx("event_intake") or "true").lower() == "true"
+        jwt_discovery_url = ctx("jwt_discovery_url")
+        if jwt_discovery_url and event_intake:
+            raise ValueError(
+                "An AgentCore runtime accepts either IAM or JWT inbound auth. The event Lambdas call the "
+                "coordinator with IAM, so a JWT authorizer needs -c event_intake=false (or a second coordinator)."
+            )
 
         table = dynamodb.TableV2(
             self,
@@ -98,7 +121,22 @@ class OpsRelayStack(Stack):
             resources=model_resources(model_id, self.region, self.account),
         )
 
-        def runtime(role: str, protocol: agentcore.ProtocolType, extra_env: dict[str, str]) -> agentcore.Runtime:
+        def queue_with_dlq(name: str, visibility: Duration) -> sqs.Queue:
+            dlq = sqs.Queue(self, f"{name}DeadLetters", retention_period=Duration.days(14), enforce_ssl=True)
+            return sqs.Queue(
+                self,
+                name,
+                visibility_timeout=visibility,
+                dead_letter_queue=sqs.DeadLetterQueue(queue=dlq, max_receive_count=5),
+                enforce_ssl=True,
+            )
+
+        # Lambdas run up to 15 minutes; SQS visibility must exceed that.
+        job_queue = queue_with_dlq("JobQueue", Duration.minutes(16)) if event_intake else None
+
+        def runtime(
+            role: str, protocol: agentcore.ProtocolType, extra_env: dict[str, str], **kwargs
+        ) -> agentcore.Runtime:  # noqa: ANN003
             rt = agentcore.Runtime(
                 self,
                 f"{role.capitalize()}Runtime",
@@ -108,6 +146,7 @@ class OpsRelayStack(Stack):
                 protocol_configuration=protocol,
                 environment_variables={**common_env, "OPSRELAY_ROLE": role, **extra_env},
                 tracing_enabled=True,
+                **kwargs,
             )
             table.grant_read_data(rt.role)
             rt.role.add_to_principal_policy(
@@ -122,13 +161,27 @@ class OpsRelayStack(Stack):
 
         specialists = {role: runtime(role, agentcore.ProtocolType.A2_A, {}) for role in SPECIALISTS}
 
+        coordinator_auth = {}
+        if jwt_discovery_url:
+            clients = [c for c in str(ctx("jwt_allowed_clients") or "").split(",") if c]
+            coordinator_auth = {
+                "authorizer_configuration": agentcore.RuntimeAuthorizerConfiguration.using_jwt(
+                    jwt_discovery_url, allowed_clients=clients or None
+                ),
+                # Forward the token so the app knows who the (already verified) caller is.
+                "request_header_configuration": agentcore.RequestHeaderConfiguration(
+                    allowlisted_headers=["Authorization"]
+                ),
+            }
         coordinator = runtime(
             "coordinator",
             agentcore.ProtocolType.HTTP,
             {
                 "OPSRELAY_SPECIALIST_TRANSPORT": "a2a",
                 **{f"OPSRELAY_{role.upper()}_ENDPOINT": rt.agent_runtime_arn for role, rt in specialists.items()},
+                **({"OPSRELAY_JOB_QUEUE_URL": job_queue.queue_url} if job_queue else {}),
             },
+            **coordinator_auth,
         )
         for rt in specialists.values():
             rt.grant_invoke_runtime(coordinator.role)
@@ -140,7 +193,64 @@ class OpsRelayStack(Stack):
             )
         )
 
+        if event_intake:
+            self._event_boundary(coordinator, job_queue, queue_with_dlq)
+
         CfnOutput(self, "CoordinatorRuntimeArn", value=coordinator.agent_runtime_arn)
         CfnOutput(self, "TableName", value=table.table_name)
         for role, rt in specialists.items():
             CfnOutput(self, f"{role.capitalize()}RuntimeArn", value=rt.agent_runtime_arn)
+
+    def _event_boundary(self, coordinator: agentcore.Runtime, job_queue: sqs.Queue, queue_with_dlq) -> None:  # noqa: ANN001
+        """EventBridge and SNS into SQS, and the Lambdas that turn messages into coordinator calls."""
+        job_queue.grant_send_messages(coordinator.role)
+
+        alert_queue = queue_with_dlq("AlertQueue", Duration.minutes(16))
+        events.Rule(
+            self,
+            "CloudWatchAlarms",
+            description="CloudWatch alarm state changes into OpsRelay",
+            event_pattern=events.EventPattern(
+                source=["aws.cloudwatch"],
+                detail_type=["CloudWatch Alarm State Change"],
+                detail={"state": {"value": ["ALARM", "OK"]}},
+            ),
+            targets=[targets.SqsQueue(alert_queue)],
+        )
+        alert_topic = sns.Topic(self, "AlertTopic", display_name="OpsRelay alerts (Alertmanager, other sources)")
+        alert_topic.add_subscription(subscriptions.SqsSubscription(alert_queue))
+
+        code = lambda_.Code.from_asset(str(Path(__file__).resolve().parent / "lambda"))
+
+        def function(name: str, mode: str) -> lambda_.Function:
+            fn = lambda_.Function(
+                self,
+                name,
+                runtime=lambda_.Runtime.PYTHON_3_12,
+                architecture=lambda_.Architecture.ARM_64,
+                handler="handler.handler",
+                code=code,
+                timeout=Duration.minutes(15),
+                memory_size=256,
+                environment={"COORDINATOR_ARN": coordinator.agent_runtime_arn, "MODE": mode},
+                description=f"OpsRelay {mode}",
+            )
+            coordinator.grant_invoke_runtime(fn)
+            return fn
+
+        intake = function("IntakeFunction", "intake")
+        intake.add_event_source(sources.SqsEventSource(alert_queue, batch_size=10, report_batch_item_failures=True))
+        worker = function("JobFunction", "jobs")
+        worker.add_event_source(sources.SqsEventSource(job_queue, batch_size=1, report_batch_item_failures=True))
+        recovery = function("RecoveryFunction", "recover")
+        events.Rule(
+            self,
+            "RecoverySchedule",
+            description="Finish interrupted OpsRelay work",
+            schedule=events.Schedule.rate(Duration.minutes(5)),
+            targets=[targets.LambdaFunction(recovery)],
+        )
+
+        CfnOutput(self, "AlertQueueUrl", value=alert_queue.queue_url)
+        CfnOutput(self, "AlertTopicArn", value=alert_topic.topic_arn)
+        CfnOutput(self, "JobQueueUrl", value=job_queue.queue_url)
