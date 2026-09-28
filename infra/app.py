@@ -2,12 +2,12 @@
 import os
 
 import aws_cdk as cdk
-from stack import AgentMeshStack
+from stack import OpsRelayStack
 
 app = cdk.App()
-AgentMeshStack(
+OpsRelayStack(
     app,
-    app.node.try_get_context("stack_name") or "AgentMesh",
+    app.node.try_get_context("stack_name") or "OpsRelay",
     env=cdk.Environment(
         account=os.environ.get("CDK_DEFAULT_ACCOUNT"),
         region=os.environ.get("CDK_DEFAULT_REGION", "us-east-1"),

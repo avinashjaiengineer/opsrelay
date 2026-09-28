@@ -2,7 +2,7 @@
 
 import pytest
 
-from agentmesh.config import get_settings
+from opsrelay.config import get_settings
 
 EXPECTED = {
     "bad-deploy": ("checkout-api", "sev1", "bad-deploy", "rollback_deployment", "high"),
@@ -75,7 +75,7 @@ def test_rejected_action_escalates_and_changes_nothing(service):
 
 
 def test_low_risk_action_can_be_auto_approved_by_policy(service, monkeypatch):
-    monkeypatch.setenv("AGENTMESH_AUTO_APPROVE_RISK", "low")
+    monkeypatch.setenv("OPSRELAY_AUTO_APPROVE_RISK", "low")
     get_settings.cache_clear()
 
     opened = service.simulate("traffic-spike")
@@ -89,7 +89,7 @@ def test_low_risk_action_can_be_auto_approved_by_policy(service, monkeypatch):
 
 
 def test_high_risk_action_is_not_auto_approved_by_low_policy(service, monkeypatch):
-    monkeypatch.setenv("AGENTMESH_AUTO_APPROVE_RISK", "low")
+    monkeypatch.setenv("OPSRELAY_AUTO_APPROVE_RISK", "low")
     get_settings.cache_clear()
 
     service.simulate("bad-deploy")

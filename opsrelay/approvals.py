@@ -2,7 +2,7 @@
 
 Agents never change infrastructure directly. The remediation agent *proposes* an action; the
 proposal is stored as a pending approval and nothing happens until a person approves it (or the
-action's risk is at or below AGENTMESH_AUTO_APPROVE_RISK). Only then does the platform, not the
+action's risk is at or below OPSRELAY_AUTO_APPROVE_RISK). Only then does the platform, not the
 agent, execute it. This is enforced here in code, so no prompt can talk its way past it.
 """
 

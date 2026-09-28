@@ -1,7 +1,7 @@
 import pytest
 
-from agentmesh import approvals
-from agentmesh.store import new_incident_id, now_iso
+from opsrelay import approvals
+from opsrelay.store import new_incident_id, now_iso
 
 
 @pytest.fixture

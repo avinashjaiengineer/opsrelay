@@ -1,18 +1,18 @@
-"""Command line: run AgentMesh locally, or drive the coordinator deployed on AgentCore.
+"""Command line: run OpsRelay locally, or drive the coordinator deployed on AgentCore.
 
-    agentmesh demo                         # full offline run of a scenario, approval prompt included
-    agentmesh simulate bad-deploy          # inject a fault and let the agents respond
-    agentmesh open "title" -d "details"    # open an incident by hand
-    agentmesh approvals                    # pending approvals
-    agentmesh approve apr-123 --by jane    # approve and let the agents continue
-    agentmesh reject apr-123 --by jane --note "not during peak"
-    agentmesh show inc-123                 # incident, approvals and timeline
-    agentmesh incidents | health
-    agentmesh up                           # run all five agents locally as A2A/HTTP servers (no Docker)
+    opsrelay demo                         # full offline run of a scenario, approval prompt included
+    opsrelay simulate bad-deploy          # inject a fault and let the agents respond
+    opsrelay open "title" -d "details"    # open an incident by hand
+    opsrelay approvals                    # pending approvals
+    opsrelay approve apr-123 --by jane    # approve and let the agents continue
+    opsrelay reject apr-123 --by jane --note "not during peak"
+    opsrelay show inc-123                 # incident, approvals and timeline
+    opsrelay incidents | health
+    opsrelay up                           # run all five agents locally as A2A/HTTP servers (no Docker)
 
 By default commands run the agents inside this process. To send them to a running coordinator:
-    --url http://127.0.0.1:8080            # one started with `agentmesh up` (or AGENTMESH_URL)
-    --remote <coordinator runtime ARN>     # the one deployed on AgentCore (or AGENTMESH_COORDINATOR_ARN)
+    --url http://127.0.0.1:8080            # one started with `opsrelay up` (or OPSRELAY_URL)
+    --remote <coordinator runtime ARN>     # the one deployed on AgentCore (or OPSRELAY_COORDINATOR_ARN)
 """
 
 import argparse
@@ -32,7 +32,7 @@ def _remote_call(arn: str, payload: dict[str, Any]) -> dict[str, Any]:
     client = boto3.client("bedrock-agentcore", region_name=region)
     resp = client.invoke_agent_runtime(
         agentRuntimeArn=arn,
-        runtimeSessionId=f"agentmesh-cli-{uuid.uuid4().hex}",
+        runtimeSessionId=f"opsrelay-cli-{uuid.uuid4().hex}",
         contentType="application/json",
         accept="application/json",
         payload=json.dumps(payload).encode(),
@@ -81,11 +81,11 @@ def _print_approvals(approvals: list[dict[str, Any]]) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        prog="agentmesh", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+        prog="opsrelay", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("--remote", default=os.environ.get("AGENTMESH_COORDINATOR_ARN"), help="coordinator runtime ARN")
+    parser.add_argument("--remote", default=os.environ.get("OPSRELAY_COORDINATOR_ARN"), help="coordinator runtime ARN")
     parser.add_argument(
-        "--url", default=os.environ.get("AGENTMESH_URL"), help="coordinator URL, e.g. from `agentmesh up`"
+        "--url", default=os.environ.get("OPSRELAY_URL"), help="coordinator URL, e.g. from `opsrelay up`"
     )
     parser.add_argument("--json", action="store_true", help="print raw JSON")
     sub = parser.add_subparsers(dest="cmd", required=True)

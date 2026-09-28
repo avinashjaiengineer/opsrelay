@@ -56,7 +56,7 @@ def _in_background(name: str, fn, **kwargs) -> None:  # noqa: ANN001
         finally:
             app.complete_async_task(task_id)
 
-    threading.Thread(target=run, name=f"agentmesh-{name}", daemon=True).start()
+    threading.Thread(target=run, name=f"opsrelay-{name}", daemon=True).start()
 
 
 def handle(payload: dict[str, Any]) -> dict[str, Any]:

@@ -1,4 +1,4 @@
-"""`agentmesh up`: the whole AgentCore topology on your machine, without Docker.
+"""`opsrelay up`: the whole AgentCore topology on your machine, without Docker.
 
 Starts the four specialist agents as separate A2A servers (ports 9001-9004 by default) and the
 coordinator on port 8080 with the same /invocations contract as AgentCore. The coordinator
@@ -34,9 +34,9 @@ def run_local_stack(host: str = "127.0.0.1", port: int = 8080, specialist_base_p
     urls = {role: f"http://{host}:{specialist_base_port + i}" for i, role in enumerate(SPECIALISTS)}
 
     # Point the coordinator at the specialists over A2A before anything reads the settings.
-    os.environ["AGENTMESH_SPECIALIST_TRANSPORT"] = "a2a"
+    os.environ["OPSRELAY_SPECIALIST_TRANSPORT"] = "a2a"
     for role, url in urls.items():
-        os.environ[f"AGENTMESH_{role.upper()}_ENDPOINT"] = url
+        os.environ[f"OPSRELAY_{role.upper()}_ENDPOINT"] = url
     get_settings.cache_clear()
     get_store.cache_clear()
 
@@ -51,7 +51,7 @@ def run_local_stack(host: str = "127.0.0.1", port: int = 8080, specialist_base_p
     _wait_until_up(list(urls.values()))
 
     settings = get_settings()
-    print("AgentMesh is running locally (Ctrl+C to stop)")
+    print("OpsRelay is running locally (Ctrl+C to stop)")
     print(
         f"  model:        {settings.model_provider}"
         + (f" ({settings.bedrock_model_id})" if settings.model_provider == "bedrock" else "")
@@ -60,5 +60,5 @@ def run_local_stack(host: str = "127.0.0.1", port: int = 8080, specialist_base_p
     for role, url in urls.items():
         print(f"  {role + ':':<16}{url}/.well-known/agent-card.json  (A2A)")
     print(f"  {'coordinator:':<16}http://{host}:{port}/invocations")
-    print(f"\nIn another terminal:  agentmesh --url http://{host}:{port} simulate bad-deploy\n")
+    print(f"\nIn another terminal:  opsrelay --url http://{host}:{port} simulate bad-deploy\n")
     app.run(port=port, host=host)

@@ -1,4 +1,4 @@
-"""Container entrypoint: `python -m agentmesh.runtime` serves the agent named by AGENTMESH_ROLE."""
+"""Container entrypoint: `python -m opsrelay.runtime` serves the agent named by OPSRELAY_ROLE."""
 
 import logging
 

@@ -1,15 +1,15 @@
 from strands.models import BedrockModel
 
-from agentmesh.agents import build_coordinator, build_specialist
-from agentmesh.agents.factory import build_model
-from agentmesh.config import SPECIALISTS, get_settings
-from agentmesh.offline import ScriptedModel
+from opsrelay.agents import build_coordinator, build_specialist
+from opsrelay.agents.factory import build_model
+from opsrelay.config import SPECIALISTS, get_settings
+from opsrelay.offline import ScriptedModel
 
 
 def test_bedrock_model_is_configured_from_settings(monkeypatch):
-    monkeypatch.setenv("AGENTMESH_MODEL_PROVIDER", "bedrock")
-    monkeypatch.setenv("AGENTMESH_BEDROCK_MODEL_ID", "us.anthropic.claude-opus-5")
-    monkeypatch.setenv("AGENTMESH_AWS_REGION", "eu-west-1")
+    monkeypatch.setenv("OPSRELAY_MODEL_PROVIDER", "bedrock")
+    monkeypatch.setenv("OPSRELAY_BEDROCK_MODEL_ID", "us.anthropic.claude-opus-5")
+    monkeypatch.setenv("OPSRELAY_AWS_REGION", "eu-west-1")
     get_settings.cache_clear()
 
     model = build_model("triage")

@@ -1,4 +1,4 @@
-# AgentMesh
+# OpsRelay
 
 **An agent-to-agent platform for enterprise IT incident resolution, built on [Strands Agents](https://strandsagents.com) and hosted on [Amazon Bedrock AgentCore](https://aws.amazon.com/bedrock/agentcore/).**
 
@@ -50,11 +50,11 @@ wiring with a scripted model instead of an LLM.
 **Windows (PowerShell):**
 
 ```powershell
-cd C:\Users\<you>\Documents\agentmesh
+cd C:\Users\<you>\Documents\opsrelay
 python -m venv .venv
 .venv\Scripts\Activate.ps1
 pip install -e ".[dev]"
-agentmesh demo bad-deploy
+opsrelay demo bad-deploy
 ```
 
 If PowerShell refuses to run `Activate.ps1`, run
@@ -65,7 +65,7 @@ If PowerShell refuses to run `Activate.ps1`, run
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-agentmesh demo bad-deploy
+opsrelay demo bad-deploy
 ```
 
 The demo shows the agents triage, diagnose and propose a rollback, then prompts you to approve
@@ -74,34 +74,34 @@ are `memory-leak` and `traffic-spike`.
 
 ### The full agent-to-agent topology, without Docker
 
-`agentmesh demo` runs every agent in one process. To run them the way AgentCore does, use
-`agentmesh up`: four specialist A2A servers (ports 9001-9004) and the coordinator on port
+`opsrelay demo` runs every agent in one process. To run them the way AgentCore does, use
+`opsrelay up`: four specialist A2A servers (ports 9001-9004) and the coordinator on port
 8080. The coordinator talks to the specialists over real A2A HTTP calls.
 
 ```powershell
 # terminal 1
-agentmesh up
+opsrelay up
 
 # terminal 2 (activate the venv first)
-agentmesh --url http://127.0.0.1:8080 simulate bad-deploy
-agentmesh --url http://127.0.0.1:8080 approvals
-agentmesh --url http://127.0.0.1:8080 approve apr-xxxxxxxxxx --by you
-agentmesh --url http://127.0.0.1:8080 show inc-xxxxxxxxxx
+opsrelay --url http://127.0.0.1:8080 simulate bad-deploy
+opsrelay --url http://127.0.0.1:8080 approvals
+opsrelay --url http://127.0.0.1:8080 approve apr-xxxxxxxxxx --by you
+opsrelay --url http://127.0.0.1:8080 show inc-xxxxxxxxxx
 ```
 
-To avoid repeating `--url`, set the `AGENTMESH_URL` environment variable (PowerShell:
-`$env:AGENTMESH_URL="http://127.0.0.1:8080"`). While it runs, you can open
+To avoid repeating `--url`, set the `OPSRELAY_URL` environment variable (PowerShell:
+`$env:OPSRELAY_URL="http://127.0.0.1:8080"`). While it runs, you can open
 http://127.0.0.1:9001/.well-known/agent-card.json in a browser to see an agent's A2A card. If
-port 8080 is taken, use `agentmesh up --port 8090`.
+port 8080 is taken, use `opsrelay up --port 8090`.
 
 ### Using Claude on Bedrock locally
 
 Set these, plus AWS credentials (for example `aws configure`), then run `demo` or `up` as above:
 
 ```powershell
-$env:AGENTMESH_MODEL_PROVIDER="bedrock"
-$env:AGENTMESH_BEDROCK_MODEL_ID="global.anthropic.claude-opus-5"   # see "Model id" below
-$env:AGENTMESH_AWS_REGION="us-east-1"
+$env:OPSRELAY_MODEL_PROVIDER="bedrock"
+$env:OPSRELAY_BEDROCK_MODEL_ID="global.anthropic.claude-opus-5"   # see "Model id" below
+$env:OPSRELAY_AWS_REGION="us-east-1"
 ```
 
 On macOS / Linux, use `export NAME=value` instead of `$env:NAME="value"`.
@@ -135,22 +135,22 @@ The stack (`infra/stack.py`) creates:
 
 | Resource | Purpose |
 |---|---|
-| `agentmesh_coordinator` AgentCore Runtime (HTTP) | Entry point; runs the coordinator agent |
-| `agentmesh_{triage,diagnostics,remediation,communications}` Runtimes (A2A) | Specialist agents, each with its own agent card |
+| `opsrelay_coordinator` AgentCore Runtime (HTTP) | Entry point; runs the coordinator agent |
+| `opsrelay_{triage,diagnostics,remediation,communications}` Runtimes (A2A) | Specialist agents, each with its own agent card |
 | DynamoDB table (on-demand, PITR) | Shared state: incidents, approvals, audit log, services |
 | One IAM role per runtime | Bedrock model invoke, table read/write, logs and X-Ray. The coordinator may also invoke the four specialists. |
 
 Operate the deployed platform with the same CLI:
 
 ```bash
-export AGENTMESH_COORDINATOR_ARN=$(aws cloudformation describe-stacks --stack-name AgentMesh \
+export OPSRELAY_COORDINATOR_ARN=$(aws cloudformation describe-stacks --stack-name OpsRelay \
   --query "Stacks[0].Outputs[?OutputKey=='CoordinatorRuntimeArn'].OutputValue" --output text)
-agentmesh simulate bad-deploy
-agentmesh approvals
-agentmesh approve apr-xxxxxxxxxx --by you@company.com
+opsrelay simulate bad-deploy
+opsrelay approvals
+opsrelay approve apr-xxxxxxxxxx --by you@company.com
 ```
 
-Or call it directly with the AWS SDK: `bedrock-agentcore` → `InvokeAgentRuntime` with a JSON payload (see `agentmesh/runtime/coordinator.py` for every action). Add `"async": true` to return immediately and poll with `get_incident`.
+Or call it directly with the AWS SDK: `bedrock-agentcore` → `InvokeAgentRuntime` with a JSON payload (see `opsrelay/runtime/coordinator.py` for every action). Add `"async": true` to return immediately and poll with `get_incident`.
 
 **Model id.** Bedrock model and inference-profile ids vary by account and region. The default is `global.anthropic.claude-opus-5`. Check what your account has with:
 
@@ -162,14 +162,14 @@ Then deploy with `cdk deploy -c model_id=<id>`.
 
 ## Configuration
 
-Environment variables, prefixed `AGENTMESH_` (see `agentmesh/config.py`):
+Environment variables, prefixed `OPSRELAY_` (see `opsrelay/config.py`):
 
 | Variable | Default | Meaning |
 |---|---|---|
 | `MODEL_PROVIDER` | `offline` | `bedrock` (Claude via Bedrock) or `offline` (scripted) |
 | `BEDROCK_MODEL_ID` | `global.anthropic.claude-opus-5` | Bedrock model or inference-profile id |
 | `STORE` | `sqlite` | `sqlite` (local) or `dynamodb` |
-| `DYNAMODB_TABLE` | `agentmesh` | Table name when `STORE=dynamodb` |
+| `DYNAMODB_TABLE` | `opsrelay` | Table name when `STORE=dynamodb` |
 | `SPECIALIST_TRANSPORT` | `local` | `local` (in-process) or `a2a` (remote agents) |
 | `TRIAGE_ENDPOINT` etc. | | AgentCore runtime ARN or `http(s)://` A2A URL, per specialist |
 | `AUTO_APPROVE_RISK` | `none` | Let actions at or below `low`/`medium` risk run without a person |
@@ -177,7 +177,7 @@ Environment variables, prefixed `AGENTMESH_` (see `agentmesh/config.py`):
 
 ## Safety model
 
-- **Agents cannot act on infrastructure.** `propose_action` only records a pending approval. Execution happens in `agentmesh/approvals.py` after a person approves, and that path is enforced in code, not in a prompt.
+- **Agents cannot act on infrastructure.** `propose_action` only records a pending approval. Execution happens in `opsrelay/approvals.py` after a person approves, and that path is enforced in code, not in a prompt.
 - **One decision per approval.** Approval state changes use conditional writes (a SQLite `WHERE` clause, a DynamoDB `ConditionExpression`), so two people can't both decide the same approval.
 - **Risk-rated actions.** Each action has a base risk, raised one level on tier-1 services. The auto-approve policy is off by default.
 - **Guarded tools.** For example, `mark_mitigated` refuses while metrics are unhealthy, `resolve_incident` refuses unless the incident is mitigated, and scaling is bounded by `max_replicas`.
@@ -187,14 +187,14 @@ Environment variables, prefixed `AGENTMESH_` (see `agentmesh/config.py`):
 
 ## Extending
 
-- **Connect real systems.** Implement `Environment` in `agentmesh/environment.py` (for example CloudWatch metrics and logs, your CMDB, your deploy tool), and return it from `get_environment()`. The simulated environment shows the contract.
+- **Connect real systems.** Implement `Environment` in `opsrelay/environment.py` (for example CloudWatch metrics and logs, your CMDB, your deploy tool), and return it from `get_environment()`. The simulated environment shows the contract.
 - **Add a specialist.** Add its tools in `agents/tools.py`, a prompt in `agents/prompts.py` and its role to `SPECIALISTS`. It gets its own A2A runtime from the CDK stack, and the coordinator gets an `ask_<role>` delegation tool.
-- **Call external A2A agents.** Any A2A-compliant agent can be a specialist: point `AGENTMESH_<ROLE>_ENDPOINT` at its URL.
+- **Call external A2A agents.** Any A2A-compliant agent can be a specialist: point `OPSRELAY_<ROLE>_ENDPOINT` at its URL.
 
 ## Project layout
 
 ```
-agentmesh/
+opsrelay/
   agents/        Strands agents: prompts, tools, factory (+ audit hook, A2A delegation tools)
   runtime/       AgentCore entrypoints: coordinator (HTTP) and specialists (A2A)
   store/         SQLite and DynamoDB stores (same contract)
@@ -203,7 +203,7 @@ agentmesh/
   offline.py     scripted Strands model provider for offline runs
   remote.py      A2A client with SigV4 for AgentCore runtimes
   service.py     incident operations used by the runtime and CLI
-  cli.py         `agentmesh` command
+  cli.py         `opsrelay` command
 infra/           AWS CDK app (AgentCore runtimes, DynamoDB, IAM)
 tests/           workflow, A2A, runtime contract, stores (SQLite + moto DynamoDB), approvals, agents, infra
 docs/            ARCHITECTURE.md: design decisions and next steps

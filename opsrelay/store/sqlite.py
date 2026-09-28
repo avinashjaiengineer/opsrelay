@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS services (name TEXT PRIMARY KEY, doc TEXT NOT NULL);
 class SqliteStore(Store):
     """Single-file store for local development. Safe to share between threads in one process."""
 
-    def __init__(self, path: str = "agentmesh.db"):
+    def __init__(self, path: str = "opsrelay.db"):
         self._conn = sqlite3.connect(path, check_same_thread=False, timeout=30, isolation_level=None)
         self._lock = threading.Lock()
         with self._lock:

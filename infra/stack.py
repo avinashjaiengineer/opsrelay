@@ -1,10 +1,10 @@
-"""AgentMesh on Amazon Bedrock AgentCore.
+"""OpsRelay on Amazon Bedrock AgentCore.
 
 Creates:
   * a DynamoDB table shared by every agent (incidents, approvals, audit log, services)
   * four specialist AgentCore Runtimes speaking the A2A protocol
   * one coordinator AgentCore Runtime speaking HTTP, allowed to invoke the specialists
-All five run the same container image; AGENTMESH_ROLE selects the agent.
+All five run the same container image; OPSRELAY_ROLE selects the agent.
 """
 
 from pathlib import Path
@@ -20,7 +20,7 @@ ROOT = Path(__file__).resolve().parent.parent
 SPECIALISTS = ("triage", "diagnostics", "remediation", "communications")
 
 
-class AgentMeshStack(Stack):
+class OpsRelayStack(Stack):
     def __init__(self, scope: Construct, construct_id: str, **kwargs) -> None:  # noqa: ANN003
         super().__init__(scope, construct_id, **kwargs)
 
@@ -56,12 +56,12 @@ class AgentMeshStack(Stack):
         )
 
         common_env = {
-            "AGENTMESH_STORE": "dynamodb",
-            "AGENTMESH_DYNAMODB_TABLE": table.table_name,
-            "AGENTMESH_AWS_REGION": self.region,
-            "AGENTMESH_MODEL_PROVIDER": model_provider,
-            "AGENTMESH_BEDROCK_MODEL_ID": model_id,
-            "AGENTMESH_AUTO_APPROVE_RISK": auto_approve_risk,
+            "OPSRELAY_STORE": "dynamodb",
+            "OPSRELAY_DYNAMODB_TABLE": table.table_name,
+            "OPSRELAY_AWS_REGION": self.region,
+            "OPSRELAY_MODEL_PROVIDER": model_provider,
+            "OPSRELAY_BEDROCK_MODEL_ID": model_id,
+            "OPSRELAY_AUTO_APPROVE_RISK": auto_approve_risk,
         }
         model_access = iam.PolicyStatement(
             actions=["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
@@ -77,11 +77,11 @@ class AgentMeshStack(Stack):
             rt = agentcore.Runtime(
                 self,
                 f"{role.capitalize()}Runtime",
-                runtime_name=f"agentmesh_{role}",
-                description=f"AgentMesh {role} agent",
+                runtime_name=f"opsrelay_{role}",
+                description=f"OpsRelay {role} agent",
                 agent_runtime_artifact=artifact,
                 protocol_configuration=protocol,
-                environment_variables={**common_env, "AGENTMESH_ROLE": role, **extra_env},
+                environment_variables={**common_env, "OPSRELAY_ROLE": role, **extra_env},
                 tracing_enabled=True,
             )
             table.grant_read_write_data(rt.role)
@@ -94,8 +94,8 @@ class AgentMeshStack(Stack):
             "coordinator",
             agentcore.ProtocolType.HTTP,
             {
-                "AGENTMESH_SPECIALIST_TRANSPORT": "a2a",
-                **{f"AGENTMESH_{role.upper()}_ENDPOINT": rt.agent_runtime_arn for role, rt in specialists.items()},
+                "OPSRELAY_SPECIALIST_TRANSPORT": "a2a",
+                **{f"OPSRELAY_{role.upper()}_ENDPOINT": rt.agent_runtime_arn for role, rt in specialists.items()},
             },
         )
         for rt in specialists.values():

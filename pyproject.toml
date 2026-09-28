@@ -1,5 +1,5 @@
 [project]
-name = "agentmesh"
+name = "opsrelay"
 version = "0.1.0"
 description = "Agent-to-agent IT incident resolution on Strands Agents and Amazon Bedrock AgentCore"
 readme = "README.md"
@@ -19,14 +19,14 @@ dependencies = [
 dev = ["pytest>=8", "ruff>=0.8", "moto[dynamodb]>=5"]
 
 [project.scripts]
-agentmesh = "agentmesh.cli:main"
+opsrelay = "opsrelay.cli:main"
 
 [build-system]
 requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["agentmesh*"]
+include = ["opsrelay*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

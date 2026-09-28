@@ -3,9 +3,9 @@ import httpx
 import pytest
 from botocore.credentials import Credentials
 
-from agentmesh.remote import SESSION_HEADER, AgentCoreSigV4, a2a_invoker, resolve_endpoint
+from opsrelay.remote import SESSION_HEADER, AgentCoreSigV4, a2a_invoker, resolve_endpoint
 
-ARN = "arn:aws:bedrock-agentcore:us-west-2:123456789012:runtime/agentmesh_triage-AbC123"
+ARN = "arn:aws:bedrock-agentcore:us-west-2:123456789012:runtime/opsrelay_triage-AbC123"
 
 
 def test_arn_resolves_to_signed_agentcore_invocation_url():
@@ -41,5 +41,5 @@ def test_sigv4_signs_request():
 
 
 def test_missing_endpoint_is_a_clear_error():
-    with pytest.raises(ValueError, match="AGENTMESH_TRIAGE_ENDPOINT"):
+    with pytest.raises(ValueError, match="OPSRELAY_TRIAGE_ENDPOINT"):
         a2a_invoker("triage", "")

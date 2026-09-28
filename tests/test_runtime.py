@@ -6,8 +6,8 @@ import httpx
 import pytest
 from starlette.testclient import TestClient
 
-from agentmesh.runtime import coordinator
-from agentmesh.store import get_store
+from opsrelay.runtime import coordinator
+from opsrelay.store import get_store
 
 
 @pytest.fixture
@@ -75,7 +75,7 @@ def test_non_object_payload(client):
 
 def test_remote_cli_payload_shape(monkeypatch):
     """The CLI's --remote mode calls InvokeAgentRuntime with a JSON payload and a long session id."""
-    from agentmesh import cli
+    from opsrelay import cli
 
     captured = {}
 
@@ -89,7 +89,7 @@ def test_remote_cli_payload_shape(monkeypatch):
             return {"response": FakeBody()}
 
     monkeypatch.setattr("boto3.client", lambda *a, **k: FakeClient())
-    arn = "arn:aws:bedrock-agentcore:eu-west-1:123456789012:runtime/agentmesh_coordinator-abc"
+    arn = "arn:aws:bedrock-agentcore:eu-west-1:123456789012:runtime/opsrelay_coordinator-abc"
     assert cli.main(["--remote", arn, "incidents"]) == 0
     assert captured["agentRuntimeArn"] == arn
     assert len(captured["runtimeSessionId"]) >= 33
@@ -97,8 +97,8 @@ def test_remote_cli_payload_shape(monkeypatch):
 
 
 def test_cli_url_mode_talks_to_a_running_coordinator(client, monkeypatch, capsys):
-    """`agentmesh --url ...` (used with `agentmesh up`) sends payloads to /invocations."""
-    from agentmesh import cli
+    """`opsrelay --url ...` (used with `opsrelay up`) sends payloads to /invocations."""
+    from opsrelay import cli
 
     def post(url, json, timeout):
         assert url == "http://127.0.0.1:8080/invocations"

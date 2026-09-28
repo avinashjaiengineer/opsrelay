@@ -328,7 +328,7 @@ class SimulatedEnvironment(Environment):
             if not prev:
                 return {"ok": False, "detail": f"{service} has no previous version to roll back to"}
             svc["version"], svc["previous_version"] = prev, None
-            svc["deployments"].append({"version": prev, "at": now_iso(), "by": "agentmesh-rollback"})
+            svc["deployments"].append({"version": prev, "at": now_iso(), "by": "opsrelay-rollback"})
             if kind == "bad_deploy":
                 svc["fault"] = None
             detail = f"Rolled {service} back to {prev}"

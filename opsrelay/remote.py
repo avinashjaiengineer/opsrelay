@@ -52,14 +52,14 @@ def resolve_endpoint(endpoint: str) -> tuple[str, httpx.Auth | None, dict[str, s
 
         region = endpoint.split(":")[3]
         # AgentCore requires a session id of at least 33 characters.
-        headers = {SESSION_HEADER: f"agentmesh-{uuid.uuid4().hex}"}
+        headers = {SESSION_HEADER: f"opsrelay-{uuid.uuid4().hex}"}
         return build_runtime_url(endpoint), AgentCoreSigV4(region), headers
     return endpoint.rstrip("/"), None, {}
 
 
 def a2a_invoker(role: Role, endpoint: str, timeout: int = 600) -> Invoker:
     if not endpoint:
-        raise ValueError(f"No A2A endpoint configured for the {role} agent (AGENTMESH_{role.upper()}_ENDPOINT)")
+        raise ValueError(f"No A2A endpoint configured for the {role} agent (OPSRELAY_{role.upper()}_ENDPOINT)")
 
     async def invoke(message: str) -> str:
         url, auth, headers = resolve_endpoint(endpoint)

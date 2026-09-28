@@ -1,4 +1,4 @@
-"""Settings, read from environment variables prefixed with AGENTMESH_."""
+"""Settings, read from environment variables prefixed with OPSRELAY_."""
 
 from functools import lru_cache
 from typing import Literal
@@ -10,9 +10,9 @@ SPECIALISTS: tuple[Role, ...] = ("triage", "diagnostics", "remediation", "commun
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", env_prefix="AGENTMESH_", extra="ignore")
+    model_config = SettingsConfigDict(env_file=".env", env_prefix="OPSRELAY_", extra="ignore")
 
-    # Which agent this process runs when started with `python -m agentmesh.runtime`.
+    # Which agent this process runs when started with `python -m opsrelay.runtime`.
     role: Role = "coordinator"
 
     # "bedrock" runs agents on Claude through Amazon Bedrock.
@@ -26,8 +26,8 @@ class Settings(BaseSettings):
 
     # "sqlite" for local development; "dynamodb" on AWS (all runtimes share one table).
     store: Literal["sqlite", "dynamodb"] = "sqlite"
-    sqlite_path: str = "agentmesh.db"
-    dynamodb_table: str = "agentmesh"
+    sqlite_path: str = "opsrelay.db"
+    dynamodb_table: str = "opsrelay"
     # DynamoDB Local (e.g. http://dynamodb:8000). Uses dummy credentials, so your real AWS
     # credentials are only used for Bedrock. Leave empty on AWS.
     dynamodb_endpoint: str = ""

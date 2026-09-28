@@ -6,7 +6,7 @@
 #        -d '{"action": "simulate", "scenario": "bad-deploy"}'
 #
 # Offline (scripted) agents by default. To use Claude on Bedrock, set
-# AGENTMESH_MODEL_PROVIDER=bedrock and AWS credentials in .env (see .env.example).
+# OPSRELAY_MODEL_PROVIDER=bedrock and AWS credentials in .env (see .env.example).
 
 x-agent: &agent
   build: .
@@ -14,9 +14,9 @@ x-agent: &agent
     - path: .env
       required: false
   environment: &env
-    AGENTMESH_STORE: dynamodb
-    AGENTMESH_DYNAMODB_TABLE: agentmesh
-    AGENTMESH_DYNAMODB_ENDPOINT: http://dynamodb:8000
+    OPSRELAY_STORE: dynamodb
+    OPSRELAY_DYNAMODB_TABLE: opsrelay
+    OPSRELAY_DYNAMODB_ENDPOINT: http://dynamodb:8000
     AWS_REGION: ${AWS_REGION:-us-east-1}
     AWS_DEFAULT_REGION: ${AWS_REGION:-us-east-1}
   depends_on:
@@ -31,32 +31,32 @@ services:
   create-table:
     build: .
     command: >
-      python -c "import time; from agentmesh.store.dynamodb import DynamoStore as D;
-      time.sleep(3); D.create_table('agentmesh', endpoint='http://dynamodb:8000')"
+      python -c "import time; from opsrelay.store.dynamodb import DynamoStore as D;
+      time.sleep(3); D.create_table('opsrelay', endpoint='http://dynamodb:8000')"
     depends_on: [dynamodb]
 
   triage:
     <<: *agent
-    environment: {<<: *env, AGENTMESH_ROLE: triage, AGENTMESH_PUBLIC_URL: "http://triage:9000/"}
+    environment: {<<: *env, OPSRELAY_ROLE: triage, OPSRELAY_PUBLIC_URL: "http://triage:9000/"}
   diagnostics:
     <<: *agent
-    environment: {<<: *env, AGENTMESH_ROLE: diagnostics, AGENTMESH_PUBLIC_URL: "http://diagnostics:9000/"}
+    environment: {<<: *env, OPSRELAY_ROLE: diagnostics, OPSRELAY_PUBLIC_URL: "http://diagnostics:9000/"}
   remediation:
     <<: *agent
-    environment: {<<: *env, AGENTMESH_ROLE: remediation, AGENTMESH_PUBLIC_URL: "http://remediation:9000/"}
+    environment: {<<: *env, OPSRELAY_ROLE: remediation, OPSRELAY_PUBLIC_URL: "http://remediation:9000/"}
   communications:
     <<: *agent
-    environment: {<<: *env, AGENTMESH_ROLE: communications, AGENTMESH_PUBLIC_URL: "http://communications:9000/"}
+    environment: {<<: *env, OPSRELAY_ROLE: communications, OPSRELAY_PUBLIC_URL: "http://communications:9000/"}
 
   coordinator:
     <<: *agent
     ports: ["8080:8080"]
     environment:
       <<: *env
-      AGENTMESH_ROLE: coordinator
-      AGENTMESH_SPECIALIST_TRANSPORT: a2a
-      AGENTMESH_TRIAGE_ENDPOINT: http://triage:9000
-      AGENTMESH_DIAGNOSTICS_ENDPOINT: http://diagnostics:9000
-      AGENTMESH_REMEDIATION_ENDPOINT: http://remediation:9000
-      AGENTMESH_COMMUNICATIONS_ENDPOINT: http://communications:9000
+      OPSRELAY_ROLE: coordinator
+      OPSRELAY_SPECIALIST_TRANSPORT: a2a
+      OPSRELAY_TRIAGE_ENDPOINT: http://triage:9000
+      OPSRELAY_DIAGNOSTICS_ENDPOINT: http://diagnostics:9000
+      OPSRELAY_REMEDIATION_ENDPOINT: http://remediation:9000
+      OPSRELAY_COMMUNICATIONS_ENDPOINT: http://communications:9000
     depends_on: [triage, diagnostics, remediation, communications]

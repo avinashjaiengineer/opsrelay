@@ -64,7 +64,7 @@ class AuditHook(HookProvider):
 
 def _agent(role: Role, store: Store, agent_tools: list) -> Agent:
     return Agent(
-        name=f"agentmesh-{role}",
+        name=f"opsrelay-{role}",
         description=DESCRIPTIONS[role],
         model=build_model(role),
         system_prompt=PROMPTS[role],

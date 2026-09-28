@@ -6,10 +6,10 @@
 |---|---|---|
 | Coordinator agent | AgentCore Runtime, HTTP protocol (`POST /invocations`, port 8080) | Strands `Agent` + `BedrockAgentCoreApp` |
 | Triage, diagnostics, remediation, communications agents | One AgentCore Runtime each, A2A protocol (JSON-RPC at `/`, port 9000) | Strands `Agent` + `StrandsA2AExecutor` + `build_a2a_app` |
-| Shared state | DynamoDB single table | `agentmesh/store/dynamodb.py` |
+| Shared state | DynamoDB single table | `opsrelay/store/dynamodb.py` |
 | Model | Claude on Amazon Bedrock | Strands `BedrockModel` |
 
-All five runtimes use one container image. `AGENTMESH_ROLE` selects the agent.
+All five runtimes use one container image. `OPSRELAY_ROLE` selects the agent.
 
 ## Agent-to-agent communication
 
@@ -24,11 +24,11 @@ A runtime doesn't know its own ARN when it's created, so the A2A client always s
 
 Specialists are stateless between requests. Everything they learn goes into the shared store, and a new agent is built for every A2A context. Any request can land on any runtime session, and a restart loses nothing.
 
-Any A2A-compliant agent, including agents on other platforms, can replace a specialist by pointing `AGENTMESH_<ROLE>_ENDPOINT` at it.
+Any A2A-compliant agent, including agents on other platforms, can replace a specialist by pointing `OPSRELAY_<ROLE>_ENDPOINT` at it.
 
 ## Human approval: durable gates, not in-memory interrupts
 
-Strands supports human-in-the-loop interrupts that pause an agent mid-run. AgentMesh doesn't use them for approvals, because an approval can take hours, and a paused agent's state lives in a runtime session that times out (15 minutes idle by default).
+Strands supports human-in-the-loop interrupts that pause an agent mid-run. OpsRelay doesn't use them for approvals, because an approval can take hours, and a paused agent's state lives in a runtime session that times out (15 minutes idle by default).
 
 Instead:
 

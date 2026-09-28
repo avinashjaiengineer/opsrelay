@@ -8,11 +8,11 @@ import httpx
 import pytest
 import uvicorn
 
-from agentmesh.config import SPECIALISTS
-from agentmesh.remote import a2a_invoker
-from agentmesh.runtime.specialist import build_app
-from agentmesh.service import IncidentService
-from agentmesh.store import get_store
+from opsrelay.config import SPECIALISTS
+from opsrelay.remote import a2a_invoker
+from opsrelay.runtime.specialist import build_app
+from opsrelay.service import IncidentService
+from opsrelay.store import get_store
 
 
 def _free_port() -> int:
@@ -52,7 +52,7 @@ def specialists():
 
 def test_agent_card_advertises_the_role_skill(specialists):
     card = httpx.get(specialists["diagnostics"] + "/.well-known/agent-card.json").json()
-    assert card["name"] == "agentmesh-diagnostics"
+    assert card["name"] == "opsrelay-diagnostics"
     assert card["url"] == specialists["diagnostics"] + "/"
     assert [s["id"] for s in card["skills"]] == ["incident-diagnostics"]
     assert card["capabilities"]["streaming"] is True

@@ -50,4 +50,4 @@ def build_app(role: Role, public_url: str | None = None):
 def serve(role: Role, port: int = A2A_PORT, host: str = "0.0.0.0") -> None:  # noqa: S104 - container entrypoint
     import uvicorn
 
-    uvicorn.run(build_app(role, os.environ.get("AGENTMESH_PUBLIC_URL")), host=host, port=port)
+    uvicorn.run(build_app(role, os.environ.get("OPSRELAY_PUBLIC_URL")), host=host, port=port)

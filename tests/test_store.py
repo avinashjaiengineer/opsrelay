@@ -6,9 +6,9 @@ import boto3
 import pytest
 from moto import mock_aws
 
-from agentmesh.store import new_approval_id, new_incident_id, now_iso
-from agentmesh.store.dynamodb import DynamoStore
-from agentmesh.store.sqlite import SqliteStore
+from opsrelay.store import new_approval_id, new_incident_id, now_iso
+from opsrelay.store.dynamodb import DynamoStore
+from opsrelay.store.sqlite import SqliteStore
 
 
 @pytest.fixture(params=["sqlite", "dynamodb"])
@@ -20,8 +20,8 @@ def any_store(request, tmp_path, monkeypatch):
         monkeypatch.setenv(key, "testing")
     with mock_aws():
         resource = boto3.resource("dynamodb", region_name="us-east-1")
-        DynamoStore.create_table("agentmesh-test", resource=resource)
-        yield DynamoStore("agentmesh-test", resource=resource)
+        DynamoStore.create_table("opsrelay-test", resource=resource)
+        yield DynamoStore("opsrelay-test", resource=resource)
 
 
 def _incident(**kw):

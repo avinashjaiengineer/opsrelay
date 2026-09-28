@@ -22,10 +22,10 @@ jobs:
     runs-on: ubuntu-24.04-arm  # AgentCore Runtime runs arm64
     steps:
       - uses: actions/checkout@v4
-      - run: docker build -t agentmesh .
+      - run: docker build -t opsrelay .
       - name: Smoke test the coordinator contract
         run: |
-          docker run -d --name coord -p 8080:8080 agentmesh
+          docker run -d --name coord -p 8080:8080 opsrelay
           for i in $(seq 30); do curl -sf localhost:8080/ping && break; sleep 1; done
           curl -sf localhost:8080/invocations -H 'content-type: application/json' \
                -d '{"action": "simulate", "scenario": "bad-deploy"}' | grep -q awaiting_approval
