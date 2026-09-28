@@ -2,21 +2,21 @@
 
 Items (each keeps the record as a JSON string in `doc`, so no float/Decimal conversion):
 
-    pk              sk                           gsi1pk      gsi1sk          other
-    INC#<id>        META                         INCIDENT    <created_at>    status
-    INC#<id>        EVT#<created_at>#<seq>#<id>  -           -
-    INC#<id>        CHAIN                        -           -               head (hash of the last event)
-    APR#<id>        META                         APPROVAL    <created_at>    status
-    EXE#<key>       META                         -           -
-    DLQ#<id>        META                         DEADLETTER  <created_at>
-    SVC#<name>      META                         SERVICE     <name>
+    pk                 sk                           gsi1pk        gsi1sk          other
+    INC#<id>           META                         INCIDENT      <created_at>    status
+    INC#<id>           EVT#<position in chain>      -             -
+    INC#<id>           CHAIN                        -             -               head (last hash), n (events)
+    APR#<id>           META                         APPROVAL      <created_at>    status
+    REC#<kind>#<id>    META                         REC#<kind>    <created_at>    status, rev
+    SVC#<name>         META                         SERVICE       <name>
 
-Status changes are conditional writes on the `status` attribute. Each audit event is written in
-one transaction with its incident's CHAIN item, conditioned on the previous head, so concurrent
-writers can't fork the hash chain.
+`commit` is one TransactWriteItems call: incident and approval writes are conditioned on their
+status, records on their revision, new items on not existing, and each touched incident's CHAIN
+item on its previous head, so concurrent writers can't fork the hash chain. If the transaction is
+cancelled, the conditions are re-read: a real conflict returns None, a lost race on a chain head
+is retried.
 """
 
-import itertools
 import json
 from typing import Any
 
@@ -24,12 +24,10 @@ import boto3
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 
-from .base import GENESIS_HASH, Record, Store, seal
+from .base import GENESIS_HASH, Commit, Committed, Record, Store, now_iso, seal
 
 GSI = "gsi1"
-
-# Orders events written in the same millisecond by this process; created_at alone ties.
-_event_seq = itertools.count()
+MAX_ATTEMPTS = 20
 
 
 def _resource(region: str | None, endpoint: str | None) -> Any:
@@ -44,7 +42,7 @@ def _resource(region: str | None, endpoint: str | None) -> Any:
     return boto3.resource("dynamodb", region_name=region)
 
 
-def _conditional_failed(e: ClientError) -> bool:
+def _cancelled(e: ClientError) -> bool:
     return e.response["Error"]["Code"] in ("ConditionalCheckFailedException", "TransactionCanceledException")
 
 
@@ -52,6 +50,7 @@ class DynamoStore(Store):
     def __init__(self, table_name: str, region: str | None = None, resource: Any = None, endpoint: str | None = None):
         dynamodb = resource or _resource(region, endpoint)
         self.table = dynamodb.Table(table_name)
+        # The resource's client serializes plain Python values itself (no {"S": ...} wrappers).
         self._client = self.table.meta.client
 
     @staticmethod
@@ -99,8 +98,8 @@ class DynamoStore(Store):
                 return out[:limit] if limit else out
             kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
 
-    # Incidents
-    def _incident_item(self, incident: Record) -> Record:
+    @staticmethod
+    def _incident_item(incident: Record) -> Record:
         return {
             "pk": f"INC#{incident['id']}",
             "sk": "META",
@@ -110,74 +109,8 @@ class DynamoStore(Store):
             "gsi1sk": incident["created_at"],
         }
 
-    def put_incident(self, incident: Record) -> None:
-        self.table.put_item(Item=self._incident_item(incident), ConditionExpression="attribute_not_exists(pk)")
-
-    def get_incident(self, incident_id: str) -> Record | None:
-        return self._get(f"INC#{incident_id}")
-
-    def list_incidents(self, limit: int = 50) -> list[Record]:
-        return self._query(Key("gsi1pk").eq("INCIDENT"), index=GSI, forward=False, limit=limit)
-
-    def transition_incident(self, incident_id: str, from_status: str, updates: Record) -> Record | None:
-        current = self.get_incident(incident_id)
-        if current is None or current["status"] != from_status:
-            return None
-        incident = {**current, **updates}
-        try:
-            self.table.put_item(
-                Item=self._incident_item(incident),
-                ConditionExpression="#s = :from",
-                ExpressionAttributeNames={"#s": "status"},
-                ExpressionAttributeValues={":from": from_status},
-            )
-        except ClientError as e:
-            if _conditional_failed(e):
-                return None
-            raise
-        return incident
-
-    # Audit log
-    def append_event(self, event: Record) -> Record:
-        # The resource's client serializes plain Python values itself (no {"S": ...} wrappers).
-        pk = f"INC#{event['incident_id']}"
-        table = self.table.name
-        for _ in range(20):
-            head_item = self._client.get_item(TableName=table, Key={"pk": pk, "sk": "CHAIN"}, ConsistentRead=True).get(
-                "Item"
-            )
-            prev_hash = head_item["head"] if head_item else GENESIS_HASH
-            sealed = seal(event, prev_hash)
-            sk = f"EVT#{event['created_at']}#{next(_event_seq):012d}#{event['id']}"
-            head_update: dict[str, Any] = {
-                "TableName": table,
-                "Key": {"pk": pk, "sk": "CHAIN"},
-                "UpdateExpression": "SET head = :new",
-                "ExpressionAttributeValues": {":new": sealed["hash"]},
-            }
-            if head_item:
-                head_update["ConditionExpression"] = "head = :prev"
-                head_update["ExpressionAttributeValues"][":prev"] = prev_hash
-            else:
-                head_update["ConditionExpression"] = "attribute_not_exists(head)"
-            try:
-                self._client.transact_write_items(
-                    TransactItems=[
-                        {"Put": {"TableName": table, "Item": {"pk": pk, "sk": sk, "doc": json.dumps(sealed)}}},
-                        {"Update": head_update},
-                    ]
-                )
-                return sealed
-            except ClientError as e:
-                if not _conditional_failed(e):
-                    raise
-        raise RuntimeError(f"Could not append to the audit chain of {event['incident_id']}")
-
-    def list_events(self, incident_id: str) -> list[Record]:
-        return self._query(Key("pk").eq(f"INC#{incident_id}") & Key("sk").begins_with("EVT#"))
-
-    # Approvals
-    def _approval_item(self, approval: Record) -> Record:
+    @staticmethod
+    def _approval_item(approval: Record) -> Record:
         return {
             "pk": f"APR#{approval['id']}",
             "sk": "META",
@@ -187,9 +120,173 @@ class DynamoStore(Store):
             "gsi1sk": approval["created_at"],
         }
 
-    def put_approval(self, approval: Record) -> None:
-        self.table.put_item(Item=self._approval_item(approval))
+    @staticmethod
+    def _record_item(record: Record) -> Record:
+        return {
+            "pk": f"REC#{record['kind']}#{record['id']}",
+            "sk": "META",
+            "doc": json.dumps(record),
+            "status": record.get("status") or "-",
+            "rev": record.get("rev", 0),
+            "gsi1pk": f"REC#{record['kind']}",
+            "gsi1sk": record["created_at"],
+        }
 
+    # Atomic writes
+    def commit(self, change: Commit) -> Committed | None:
+        table = self.table.name
+        for _ in range(MAX_ATTEMPTS):
+            items: list[dict] = []
+            incident = None
+            if change.incident:
+                c = change.incident
+                current = self.get_incident(c.incident_id)
+                if current is None or current["status"] != c.expected_status:
+                    return None
+                incident = {**current, **c.updates}
+                items.append(
+                    {
+                        "Put": {
+                            "TableName": table,
+                            "Item": self._incident_item(incident),
+                            "ConditionExpression": "#s = :from",
+                            "ExpressionAttributeNames": {"#s": "status"},
+                            "ExpressionAttributeValues": {":from": c.expected_status},
+                        }
+                    }
+                )
+
+            approvals: dict[str, Record] = {}
+            if any(self.get_approval(a["id"]) for a in change.new_approvals) or any(
+                self.get_record(r["kind"], r["id"]) for r in change.new_records
+            ):
+                return None
+            for a in change.new_approvals:
+                items.append(
+                    {
+                        "Put": {
+                            "TableName": table,
+                            "Item": self._approval_item(a),
+                            "ConditionExpression": "attribute_not_exists(pk)",
+                        }
+                    }
+                )
+                approvals[a["id"]] = a
+            for m in change.approval_moves:
+                current = self.get_approval(m.approval_id)
+                if current is None or current["status"] != m.expected_status:
+                    return None
+                approval = {**current, **m.updates}
+                items.append(
+                    {
+                        "Put": {
+                            "TableName": table,
+                            "Item": self._approval_item(approval),
+                            "ConditionExpression": "#s = :from",
+                            "ExpressionAttributeNames": {"#s": "status"},
+                            "ExpressionAttributeValues": {":from": m.expected_status},
+                        }
+                    }
+                )
+                approvals[m.approval_id] = approval
+
+            records: dict[tuple[str, str], Record] = {}
+            for r in change.new_records:
+                items.append(
+                    {
+                        "Put": {
+                            "TableName": table,
+                            "Item": self._record_item(r),
+                            "ConditionExpression": "attribute_not_exists(pk)",
+                        }
+                    }
+                )
+                records[(r["kind"], r["id"])] = r
+            for m in change.record_moves:
+                current = self.get_record(m.kind, m.record_id)
+                if current is None or current["rev"] != m.expected_rev:
+                    return None
+                record = {**current, **m.updates, "rev": m.expected_rev + 1, "updated_at": now_iso()}
+                items.append(
+                    {
+                        "Put": {
+                            "TableName": table,
+                            "Item": self._record_item(record),
+                            "ConditionExpression": "rev = :rev",
+                            "ExpressionAttributeValues": {":rev": m.expected_rev},
+                        }
+                    }
+                )
+                records[(m.kind, m.record_id)] = record
+
+            # Each event's sort key is its position in the chain (from the CHAIN item), so reading
+            # events back always yields chain order, whatever order concurrent writers created them.
+            sealed_events: list[Record] = []
+            heads: dict[str, list] = {}  # incident -> [head read, current head, position]
+            for event in change.events:
+                pk = f"INC#{event['incident_id']}"
+                if pk not in heads:
+                    head_item = self._client.get_item(
+                        TableName=table, Key={"pk": pk, "sk": "CHAIN"}, ConsistentRead=True
+                    ).get("Item")
+                    read = head_item["head"] if head_item else None
+                    heads[pk] = [read, read or GENESIS_HASH, int(head_item.get("n", 0)) if head_item else 0]
+                read, prev, n = heads[pk]
+                sealed = seal(event, prev)
+                heads[pk] = [read, sealed["hash"], n + 1]
+                sk = f"EVT#{n + 1:012d}"
+                items.append(
+                    {
+                        "Put": {
+                            "TableName": table,
+                            "Item": {"pk": pk, "sk": sk, "doc": json.dumps(sealed)},
+                            "ConditionExpression": "attribute_not_exists(sk)",  # a position is written once
+                        }
+                    }
+                )
+                sealed_events.append(sealed)
+            for pk, (read, head, n) in heads.items():
+                update: dict[str, Any] = {
+                    "TableName": table,
+                    "Key": {"pk": pk, "sk": "CHAIN"},
+                    "UpdateExpression": "SET head = :new, n = :n",
+                    "ExpressionAttributeValues": {":new": head, ":n": n},
+                }
+                if read is None:
+                    update["ConditionExpression"] = "attribute_not_exists(head)"
+                else:
+                    update["ConditionExpression"] = "head = :prev"
+                    update["ExpressionAttributeValues"][":prev"] = read
+                items.append({"Update": update})
+
+            if not items:
+                return Committed(incident=None, approvals={}, records={}, events=[])
+            if len(items) > 100:
+                raise ValueError(f"A commit can write at most 100 items, not {len(items)}")
+            try:
+                self._client.transact_write_items(TransactItems=items)
+            except ClientError as e:
+                if not _cancelled(e):
+                    raise
+                continue  # re-read: a real conflict returns None above; a chain-head race retries
+            return Committed(incident=incident, approvals=approvals, records=records, events=sealed_events)
+        return None
+
+    # Incidents
+    def put_incident(self, incident: Record) -> None:
+        self.table.put_item(Item=self._incident_item(incident), ConditionExpression="attribute_not_exists(pk)")
+
+    def get_incident(self, incident_id: str) -> Record | None:
+        return self._get(f"INC#{incident_id}")
+
+    def list_incidents(self, limit: int = 50) -> list[Record]:
+        return self._query(Key("gsi1pk").eq("INCIDENT"), index=GSI, forward=False, limit=limit)
+
+    # Audit log
+    def list_events(self, incident_id: str) -> list[Record]:
+        return self._query(Key("pk").eq(f"INC#{incident_id}") & Key("sk").begins_with("EVT#"))
+
+    # Approvals
     def get_approval(self, approval_id: str) -> Record | None:
         return self._get(f"APR#{approval_id}")
 
@@ -201,56 +298,13 @@ class DynamoStore(Store):
             if (status is None or a["status"] == status) and (incident_id is None or a["incident_id"] == incident_id)
         ]
 
-    def transition_approval(self, approval_id: str, from_status: str, updates: Record) -> Record | None:
-        current = self.get_approval(approval_id)
-        if current is None or current["status"] != from_status:
-            return None
-        approval = {**current, **updates}
-        try:
-            self.table.put_item(
-                Item=self._approval_item(approval),
-                ConditionExpression="#s = :from",
-                ExpressionAttributeNames={"#s": "status"},
-                ExpressionAttributeValues={":from": from_status},
-            )
-        except ClientError as e:
-            if _conditional_failed(e):
-                return None
-            raise
-        return approval
+    # Records
+    def get_record(self, kind: str, record_id: str) -> Record | None:
+        return self._get(f"REC#{kind}#{record_id}")
 
-    # Executions
-    def claim_execution(self, execution: Record) -> bool:
-        try:
-            self.table.put_item(
-                Item={"pk": f"EXE#{execution['key']}", "sk": "META", "doc": json.dumps(execution)},
-                ConditionExpression="attribute_not_exists(pk)",
-            )
-        except ClientError as e:
-            if _conditional_failed(e):
-                return False
-            raise
-        return True
-
-    def get_execution(self, key: str) -> Record | None:
-        return self._get(f"EXE#{key}")
-
-    def finish_execution(self, key: str, updates: Record) -> Record:
-        current = self.get_execution(key)
-        if current is None:
-            raise KeyError(f"Unknown execution {key}")
-        execution = {**current, **updates}
-        self._put(f"EXE#{key}", "META", execution)
-        return execution
-
-    # Dead letters
-    def put_dead_letter(self, dead_letter: Record) -> None:
-        self._put(
-            f"DLQ#{dead_letter['id']}", "META", dead_letter, gsi1pk="DEADLETTER", gsi1sk=dead_letter["created_at"]
-        )
-
-    def list_dead_letters(self, limit: int = 50) -> list[Record]:
-        return self._query(Key("gsi1pk").eq("DEADLETTER"), index=GSI, forward=False, limit=limit)
+    def list_records(self, kind: str, status: str | None = None, limit: int = 200) -> list[Record]:
+        records = self._query(Key("gsi1pk").eq(f"REC#{kind}"), index=GSI, forward=False)
+        return [r for r in records if status is None or r.get("status") == status][:limit]
 
     # Services
     def put_service(self, service: Record) -> None:

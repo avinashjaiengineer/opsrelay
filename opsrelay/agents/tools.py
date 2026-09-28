@@ -31,6 +31,7 @@ from ..schemas import (
     validation_errors,
 )
 from ..store import Record, Store, now_iso
+from ..store.base import make_event
 from .meta import agent_meta
 
 AUDIT_NOISE = ("tool.invoked", "tool.completed", "tool.failed", "status.changed")
@@ -48,8 +49,14 @@ def _invalid(model: str, e: ValidationError) -> str:
     return _error(f"{model} is invalid; fix these fields and submit again", problems=validation_errors(e))
 
 
+def _event(role: str, incident_id: str, kind: str, message: str, result: Record) -> Record:
+    """An agent's typed result as an audit event, carrying the agent, model and prompt versions."""
+    return make_event(incident_id, role, kind, message, {"result": result, **agent_meta(role)}, output=result)
+
+
 def _emit(store: Store, role: str, incident_id: str, kind: str, message: str, result: Record) -> None:
-    store.record(incident_id, role, kind, message, {"result": result, **agent_meta(role)}, output=result)
+    """For results that don't change state; state changes carry their event in the same commit."""
+    store.append_event(_event(role, incident_id, kind, message, result))
 
 
 def _acting(store: Store, incident_id: str, role: str) -> tuple[Record | None, str | None]:
@@ -173,17 +180,18 @@ def triage_tools(store: Store, env: Environment, role: str = "triage") -> list:
                 severity=result.severity,
                 customer_impact=result.customer_impact,
                 triage=dump,
+                events=[
+                    _event(
+                        role,
+                        result.incident_id,
+                        "incident.triaged",
+                        f"{result.severity} on {result.service}: {result.customer_impact}",
+                        dump,
+                    )
+                ],
             )
         except IllegalTransition as e:
             return _error(str(e))
-        _emit(
-            store,
-            role,
-            result.incident_id,
-            "incident.triaged",
-            f"{result.severity} on {result.service}: {result.customer_impact}",
-            dump,
-        )
         return _json({"ok": True, "status": "investigating"})
 
     @tool
@@ -279,14 +287,15 @@ def diagnostics_tools(store: Store, env: Environment, role: str = "diagnostics")
             root_cause=result.root_cause,
             category=result.category,
             recommended_action=result.recommended_action,
-        )
-        _emit(
-            store,
-            role,
-            result.incident_id,
-            "diagnosis.completed",
-            f"{result.root_cause} (confidence {result.confidence:.0%})",
-            dump,
+            events=[
+                _event(
+                    role,
+                    result.incident_id,
+                    "diagnosis.completed",
+                    f"{result.root_cause} (confidence {result.confidence:.0%})",
+                    dump,
+                )
+            ],
         )
         return _json({"ok": True})
 
@@ -308,7 +317,7 @@ def remediation_tools(store: Store, env: Environment, role: str = "remediation")
     def list_allowed_actions() -> str:
         """The actions the policy engine knows: base risk, whether a person must approve, the
         parameters each takes, and actions that are never allowed."""
-        return _json(get_policy().actions)
+        return _json(get_policy(store).actions)
 
     @tool
     def submit_proposal(
@@ -356,15 +365,8 @@ def remediation_tools(store: Store, env: Environment, role: str = "remediation")
         if err:
             return err
         try:
-            approval = approvals.propose(store, env, proposal, agent=role)
+            approval = approvals.propose(store, env, proposal, agent=role, meta=agent_meta(role))
         except approvals.PolicyDenied as e:
-            store.record(
-                proposal.incident_id,
-                role,
-                "remediation.denied",
-                f"Policy denied {proposal.action}: " + "; ".join(e.decision.reasons),
-                {"decision": e.decision.model_dump(), **agent_meta(role)},
-            )
             return _error(
                 "Denied by policy",
                 reasons=e.decision.reasons,
@@ -458,8 +460,7 @@ def verification_tools(store: Store, env: Environment, role: str = "verification
                 "Check get_metrics again."
             )
         dump = result.model_dump()
-        _emit(
-            store,
+        event = _event(
             role,
             result.incident_id,
             "verification.completed",
@@ -467,7 +468,7 @@ def verification_tools(store: Store, env: Environment, role: str = "verification
             dump,
         )
         if result.recovered:
-            store.update_incident(result.incident_id, verification=dump, verified_at=now_iso())
+            store.update_incident(result.incident_id, verification=dump, verified_at=now_iso(), events=[event])
             return _json({"ok": True, "status": "verifying", "recovered": True})
         try:
             transition(
@@ -478,6 +479,7 @@ def verification_tools(store: Store, env: Environment, role: str = "verification
                 reason=result.summary,
                 verification=dump,
                 failure_reason=result.summary,
+                events=[event],
             )
         except IllegalTransition as e:
             return _error(str(e))
@@ -583,10 +585,14 @@ def communications_tools(store: Store, role: str = "communications") -> list:
                 postmortem=postmortem.markdown(incident["title"]),
                 postmortem_data=dump,
                 resolved_at=now_iso(),
+                events=[
+                    _event(
+                        role, postmortem.incident_id, "incident.resolved", "Incident resolved; postmortem written", dump
+                    )
+                ],
             )
         except IllegalTransition as e:
             return _error(str(e))
-        _emit(store, role, postmortem.incident_id, "incident.resolved", "Incident resolved; postmortem written", dump)
         return _json({"ok": True, "status": "resolved"})
 
     return [*common_tools(store), get_incident_timeline, post_status_update, submit_postmortem]
@@ -604,10 +610,17 @@ def coordinator_tools(store: Store, role: str = "coordinator") -> list:
         if not reason.strip():
             return _error("reason is required")
         try:
-            transition(store, incident_id, Status.ESCALATED, actor=role, reason=reason, escalation_reason=reason)
+            transition(
+                store,
+                incident_id,
+                Status.ESCALATED,
+                actor=role,
+                reason=reason,
+                escalation_reason=reason,
+                events=[_event(role, incident_id, "incident.escalated", reason, {"reason": reason})],
+            )
         except (IllegalTransition, KeyError) as e:
             return _error(str(e).strip("'\""))
-        _emit(store, role, incident_id, "incident.escalated", reason, {"reason": reason})
         return _json({"ok": True, "status": "escalated"})
 
     return [*common_tools(store), escalate_incident]

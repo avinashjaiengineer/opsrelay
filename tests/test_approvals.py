@@ -1,11 +1,14 @@
 """The governance layer: proposal -> policy engine -> approval engine -> execution engine."""
 
+import time
+
 import pytest
 
 from opsrelay import approvals, executor
 from opsrelay.lifecycle import Status, transition
 from opsrelay.schemas import RemediationProposal
 from opsrelay.store import new_incident_id, now_iso
+from opsrelay.store.base import new_record
 
 
 def _investigating(store, confidence=0.95):
@@ -128,6 +131,96 @@ def test_decision_requires_an_approver(store, env):
     approval = _propose(store, env, _investigating(store))
     with pytest.raises(approvals.ApprovalError, match="approver"):
         approvals.decide(store, env, approval["id"], approve=True, approver=" ")
+
+
+def _approved_but_not_run(store, env, monkeypatch, scenario="bad-deploy"):
+    """An approval that was approved (incident remediating), as if the process died right after."""
+    env.inject(scenario)
+    iid = _investigating(store)
+    pending = _propose(store, env, iid, "rollback_deployment", "checkout-api", "high")
+    monkeypatch.setattr(approvals, "run_approved", lambda store, env, approval: approval)
+    approval = approvals.decide(store, env, pending["id"], approve=True, approver="alice")
+    monkeypatch.undo()
+    assert (approval["status"], store.get_incident(iid)["status"]) == ("approved", "remediating")
+    return iid, approval
+
+
+def _stale_claim(store, approval, **extra):
+    """The execution record left behind by an executor that stopped (its lease has expired)."""
+    key = executor.idempotency_key(approval)
+    store.put_record(new_record("execution", key, "running", owner="dead-host", attempt=1, lease_until=0, **extra))
+    return key
+
+
+def test_crash_before_the_action_ran_is_recovered_by_running_it_once(store, env, monkeypatch):
+    iid, approval = _approved_but_not_run(store, env, monkeypatch)
+    _stale_claim(store, approval)
+    deploys = len(env.deployments("checkout-api"))
+
+    assert approvals.recover(store, env) == [iid]
+
+    assert len(env.deployments("checkout-api")) == deploys + 1  # rolled back exactly once
+    assert store.get_approval(approval["id"])["status"] == "executed"
+    assert store.get_incident(iid)["status"] == "verifying"
+    recovering = next(e for e in store.list_events(iid) if e["kind"] == "execution.recovering")
+    assert recovering["data"]["reconciled"] == "not_applied"
+
+
+def test_crash_after_the_action_ran_is_reconciled_not_repeated(store, env, monkeypatch):
+    iid, approval = _approved_but_not_run(store, env, monkeypatch)
+    key = _stale_claim(store, approval)
+    env.execute("rollback_deployment", "checkout-api", {}, idempotency_key=key)  # it ran, then the process died
+    deploys = len(env.deployments("checkout-api"))
+
+    approvals.recover(store, env)
+
+    assert len(env.deployments("checkout-api")) == deploys  # not rolled back a second time
+    done = store.get_approval(approval["id"])
+    assert done["status"] == "executed" and "already been applied" in done["result"]["detail"]
+    assert store.get_incident(iid)["status"] == "verifying"
+
+
+def test_unknown_outcome_fails_safe_to_a_person(store, env, monkeypatch):
+    iid, approval = _approved_but_not_run(store, env, monkeypatch)
+    _stale_claim(store, approval)
+    monkeypatch.setattr(env, "reconcile", lambda *args: "unknown")
+
+    approvals.recover(store, env)
+
+    assert store.get_approval(approval["id"])["status"] == "failed"
+    incident = store.get_incident(iid)
+    assert incident["status"] == "failed" and "a person must check" in incident["failure_reason"]
+
+
+def test_a_live_lease_is_not_duplicated(store, env, monkeypatch):
+    iid, approval = _approved_but_not_run(store, env, monkeypatch)
+    key = executor.idempotency_key(approval)
+    store.put_record(
+        new_record("execution", key, "running", owner="busy-host", attempt=1, lease_until=time.time() + 60)
+    )
+    deploys = len(env.deployments("checkout-api"))
+
+    result = executor.execute(store, env, approval)
+    assert result["in_progress"] and approvals.recover(store, env) == []
+    assert len(env.deployments("checkout-api")) == deploys
+    assert store.get_incident(iid)["status"] == "remediating"  # left to the lease holder
+
+
+def test_every_state_change_has_its_audit_event(store, env):
+    """Atomic state + audit: each status the incident passed through has exactly one event."""
+    env.inject("bad-deploy")
+    iid = _investigating(store)
+    approval = _propose(store, env, iid, "rollback_deployment", "checkout-api", "high")
+    approvals.decide(store, env, approval["id"], approve=True, approver="alice")
+    moves = [(e["data"]["from"], e["data"]["to"]) for e in store.list_events(iid) if e["kind"] == "status.changed"]
+    assert moves == [
+        ("investigating", "awaiting_approval"),
+        ("awaiting_approval", "remediating"),
+        ("remediating", "verifying"),
+    ]
+    # The decision event and the approval change were written together with the move.
+    kinds = [e["kind"] for e in store.list_events(iid)]
+    assert kinds.index("approval.approved") == kinds.index("status.changed", kinds.index("approval.requested")) + 1
 
 
 def test_escalation_cancels_pending_approvals(store, env):

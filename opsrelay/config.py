@@ -55,6 +55,10 @@ class Settings(BaseSettings):
     breaker_failure_threshold: int = 5
     breaker_recovery_seconds: float = 30
 
+    # An execution's lease: if the executor running an action stops, another may take over (and
+    # reconcile with the environment) once the lease expires.
+    execution_lease_seconds: float = 300
+
     # Remediation policy (see opsrelay/policies.yaml). Empty: the built-in policy.
     policy_file: str = ""
 

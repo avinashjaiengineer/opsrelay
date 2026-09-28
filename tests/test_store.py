@@ -8,7 +8,7 @@ from moto import mock_aws
 
 from opsrelay.audit import verify_chain
 from opsrelay.store import new_approval_id, new_incident_id, now_iso
-from opsrelay.store.base import GENESIS_HASH, StatusChangeError
+from opsrelay.store.base import GENESIS_HASH, Commit, IncidentChange, StatusChangeError, make_event, new_record
 from opsrelay.store.dynamodb import DynamoStore
 from opsrelay.store.sqlite import SqliteStore
 
@@ -96,11 +96,51 @@ def test_tampering_with_an_event_is_detected(any_store):
     assert verify_chain(events)["ok"]
 
 
-def test_executions_are_claimed_once(any_store):
-    assert any_store.claim_execution({"key": "inc-1:restart:svc:x", "state": "running"}) is True
-    assert any_store.claim_execution({"key": "inc-1:restart:svc:x", "state": "running"}) is False
-    done = any_store.finish_execution("inc-1:restart:svc:x", {"state": "done", "result": {"ok": True}})
-    assert done["result"] == {"ok": True} == any_store.get_execution("inc-1:restart:svc:x")["result"]
+def test_commit_is_all_or_nothing(any_store):
+    inc = _incident()
+    any_store.put_incident(inc)
+    approval = _approval(inc["id"])
+    event = make_event(inc["id"], "platform", "note", "should not be written")
+
+    # The incident isn't in the expected status, so nothing in the commit is written.
+    change = Commit(
+        incident=IncidentChange(inc["id"], "triaging", {"status": "investigating"}),
+        new_approvals=[approval],
+        events=[event],
+    )
+    assert any_store.commit(change) is None
+    assert any_store.get_incident(inc["id"])["status"] == "open"
+    assert any_store.get_approval(approval["id"]) is None
+    assert any_store.list_events(inc["id"]) == []
+
+    # With the right expected status, all of it lands together, the event sealed on the chain.
+    ok = Commit(
+        incident=IncidentChange(inc["id"], "open", {"status": "triaging"}),
+        new_approvals=[approval],
+        events=[event],
+    )
+    done = any_store.commit(ok)
+    assert done.incident["status"] == "triaging"
+    assert any_store.get_approval(approval["id"])["status"] == "pending"
+    [stored] = any_store.list_events(inc["id"])
+    assert stored["id"] == event["id"] and stored["prev_hash"] == GENESIS_HASH
+    # Replaying the same commit conflicts: the approval exists and the status moved on.
+    assert any_store.commit(ok) is None
+
+
+def test_records_change_by_revision(any_store):
+    assert any_store.put_record(new_record("execution", "inc-1:restart:svc:x", "running", lease_until=1.0))
+    assert not any_store.put_record(new_record("execution", "inc-1:restart:svc:x", "running"))
+    rec = any_store.get_record("execution", "inc-1:restart:svc:x")
+    assert rec["rev"] == 0
+
+    first = any_store.move_record("execution", rec["id"], 0, {"owner": "a"})
+    second = any_store.move_record("execution", rec["id"], 0, {"owner": "b"})  # stale revision
+    assert (first["owner"], first["rev"], second) == ("a", 1, None)
+    done = any_store.move_record("execution", rec["id"], 1, {"status": "done", "result": {"ok": True}})
+    assert any_store.get_record("execution", rec["id"])["result"] == {"ok": True} == done["result"]
+    assert [r["id"] for r in any_store.list_records("execution", status="done")] == [rec["id"]]
+    assert any_store.list_records("execution", status="running") == []
 
 
 def test_dead_letters_newest_first(any_store):
@@ -150,6 +190,38 @@ def test_sqlite_only_one_concurrent_decision_wins(tmp_path):
     for t in threads:
         t.join()
     assert len(winners) == 1
+
+
+def test_dynamodb_racing_writer_retries_instead_of_forking_the_chain(monkeypatch):
+    """Writer A reads the chain head; writer B commits before A's transaction; A must not fork or
+    overwrite the chain but retry on top of B. (Deterministic: moto doesn't apply transaction
+    conditions atomically across threads, so a threaded test proves nothing there.)"""
+    for key in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"):
+        monkeypatch.setenv(key, "testing")
+    with mock_aws():
+        resource = boto3.resource("dynamodb", region_name="us-east-1")
+        DynamoStore.create_table("opsrelay-race", resource=resource)
+        a, b = (DynamoStore("opsrelay-race", resource=resource) for _ in range(2))
+        inc = _incident()
+        a.put_incident(inc)
+        a.record(inc["id"], "platform", "note", "first")
+
+        real_get_item = a._client.get_item
+        raced = []
+
+        def get_item_then_race(**kwargs):
+            item = real_get_item(**kwargs)
+            if kwargs["Key"]["sk"] == "CHAIN" and not raced:
+                raced.append(True)
+                b.record(inc["id"], "platform", "note", "B, sneaking in")  # commits after A's read
+            return item
+
+        monkeypatch.setattr(a._client, "get_item", get_item_then_race)
+        a.record(inc["id"], "platform", "note", "A, after retrying")
+
+        events = a.list_events(inc["id"])
+        assert [e["message"] for e in events] == ["first", "B, sneaking in", "A, after retrying"]
+        assert verify_chain(events)["ok"]
 
 
 def test_sqlite_concurrent_writers_keep_one_chain(tmp_path):

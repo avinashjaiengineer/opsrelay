@@ -172,11 +172,18 @@ class Environment(ABC):
     def runbook(self, topic: str) -> str: ...
 
     @abstractmethod
-    def execute(self, action: str, service: str, params: Record) -> Record:
+    def execute(self, action: str, service: str, params: Record, idempotency_key: str | None = None) -> Record:
         """Carry out an approved action. Returns {"ok": bool, "detail": str}.
 
-        Only opsrelay.executor calls this, after the policy engine and approval engine agree.
+        Only opsrelay.executor calls this, after the policy engine and approval engine agree. Tag
+        the change with `idempotency_key` where the target system allows it, so `reconcile` can
+        find it again.
         """
+
+    def reconcile(self, action: str, service: str, params: Record, idempotency_key: str) -> str:
+        """After an executor stopped mid-action: did the change happen? "applied", "not_applied" or
+        "unknown". The default is "unknown", which fails safe (a person checks)."""
+        return "unknown"
 
 
 class SimulatedEnvironment(Environment):
@@ -308,7 +315,11 @@ class SimulatedEnvironment(Environment):
         return "No matching runbook. Available: " + ", ".join(RUNBOOKS)
 
     # Action
-    def execute(self, action: str, service: str, params: Record) -> Record:
+    def reconcile(self, action: str, service: str, params: Record, idempotency_key: str) -> str:
+        svc = self._svc(service)
+        return "applied" if idempotency_key in svc.get("applied_actions", []) else "not_applied"
+
+    def execute(self, action: str, service: str, params: Record, idempotency_key: str | None = None) -> Record:
         if action not in ACTIONS:
             return {"ok": False, "detail": f"Unknown action {action}"}
         svc = self._svc(service)
@@ -340,6 +351,8 @@ class SimulatedEnvironment(Environment):
             detail = f"Scaled {service} to {replicas} replicas"
         else:  # flush_cache
             detail = f"Flushed cache for {service}"
+        if idempotency_key:  # like a deploy tool's change id: lets reconcile find this change
+            svc["applied_actions"] = [*svc.get("applied_actions", []), idempotency_key][-100:]
         self.store.put_service(svc)
         return {"ok": True, "detail": detail}
 

@@ -11,6 +11,7 @@ import uuid
 
 from .lifecycle import TERMINAL, IllegalTransition, Status, status_of, transition
 from .store import Record, Store, now_iso
+from .store.base import Commit, make_event, new_record
 
 
 def dead_letter(store: Store, incident_id: str, agent: str, request: str, attempts: list[str], error: str) -> Record:
@@ -23,13 +24,20 @@ def dead_letter(store: Store, incident_id: str, agent: str, request: str, attemp
         "error": error,
         "created_at": now_iso(),
     }
-    store.put_dead_letter(letter)
-    store.record(
-        incident_id,
-        "platform",
-        "agent.unavailable",
-        f"{agent} unavailable after {len(attempts)} attempt(s): {error}. Request moved to the dead-letter queue.",
-        {"dead_letter_id": letter["id"], "agent": agent, "attempts": attempts},
+    store.commit(
+        Commit(
+            new_records=[new_record("dead_letter", letter["id"], "open", **letter)],
+            events=[
+                make_event(
+                    incident_id,
+                    "platform",
+                    "agent.unavailable",
+                    f"{agent} unavailable after {len(attempts)} attempt(s): {error}. "
+                    "Request moved to the dead-letter queue.",
+                    {"dead_letter_id": letter["id"], "agent": agent, "attempts": attempts},
+                )
+            ],
+        )
     )
     _hand_to_human(store, incident_id, f"the {agent} agent is unavailable ({letter['id']})")
     return letter

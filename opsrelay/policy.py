@@ -131,5 +131,12 @@ def load_policy(path: str | None = None) -> Policy:
 
 
 @lru_cache
-def get_policy() -> Policy:
+def _file_policy() -> Policy:
     return load_policy(get_settings().policy_file or None)
+
+
+def get_policy(store: Any = None) -> Policy:  # noqa: ARG001 - the store holds versioned policies (see policy_admin)
+    return _file_policy()
+
+
+get_policy.cache_clear = _file_policy.cache_clear  # type: ignore[attr-defined]

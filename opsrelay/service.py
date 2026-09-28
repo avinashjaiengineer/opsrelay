@@ -158,7 +158,7 @@ class IncidentService:
         return self.store.list_dead_letters(limit)
 
     def policy(self) -> Record:
-        policy = get_policy()
+        policy = get_policy(self.store)
         return {"version": policy.version, **policy.doc}
 
     def test_policy(
@@ -182,7 +182,7 @@ class IncidentService:
             diagnosis_confidence=confidence,
             proposals_so_far=0,
         )
-        return get_policy().evaluate(proposal, facts).model_dump()
+        return get_policy(self.store).evaluate(proposal, facts).model_dump()
 
     @staticmethod
     def contracts() -> Record:
