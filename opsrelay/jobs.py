@@ -29,7 +29,7 @@ import time
 import uuid
 from collections.abc import Callable
 
-from . import approvals, memory
+from . import approvals, integrations, memory
 from .config import get_settings
 from .deadletter import dead_letter
 from .store import Record, Store
@@ -39,7 +39,9 @@ log = logging.getLogger(__name__)
 KIND = "job"
 
 
-def enqueue(store: Store, incident_id: str, prompt: str, *, action: str = "coordinate") -> Record:
+def enqueue(store: Store, incident_id: str, prompt: str, *, action: str = "coordinate", **extra) -> Record:  # noqa: ANN003
+    """Queue a job: "coordinate" runs the coordinator with `prompt`; "notify" delivers the
+    notification `notification_id` (opsrelay.integrations)."""
     job = new_record(
         KIND,
         f"job-{uuid.uuid4().hex[:12]}",
@@ -52,6 +54,7 @@ def enqueue(store: Store, incident_id: str, prompt: str, *, action: str = "coord
         lease_until=0.0,
         owner=None,
         error=None,
+        **extra,
     )
     store.put_record(job)
     store.record(incident_id, "platform", "job.queued", f"{action} queued ({job['id']})", {"job_id": job["id"]})
@@ -193,7 +196,10 @@ class Worker:
         heartbeat = threading.Thread(target=self._heartbeat, args=(svc.store, job, beat), daemon=True)
         heartbeat.start()
         try:
-            svc.run_coordinator(job["incident_id"], job["prompt"])
+            if job["action"] == "notify":
+                integrations.deliver(svc.store, job["notification_id"])
+            else:
+                svc.run_coordinator(job["incident_id"], job["prompt"])
         except Exception as e:  # noqa: BLE001 - recorded on the job and in the audit log
             beat.set()
             heartbeat.join()
@@ -237,7 +243,10 @@ class Worker:
             )
             return
         self._finish(store, job["id"], {"status": "failed", "error": message, "lease_until": 0.0})
-        dead_letter(store, job["incident_id"], "coordinator", job["prompt"], [message], message)
+        if job["action"] == "notify":  # a lost notification doesn't need the incident handed over
+            dead_letter(store, job["incident_id"], "notify", job["notification_id"], [message], message, escalate=False)
+        else:
+            dead_letter(store, job["incident_id"], "coordinator", job["prompt"], [message], message)
 
 
 _worker: Worker | None = None

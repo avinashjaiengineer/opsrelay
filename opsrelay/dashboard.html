@@ -177,7 +177,7 @@ const STATUS = {
 };
 const LIFECYCLE = ["open", "triaging", "investigating", "awaiting_approval", "remediating", "verifying", "resolved"];
 const HIDDEN = new Set(["tool.invoked", "tool.completed", "tool.failed"]);
-let selected = null;
+let selected = new URLSearchParams(location.search).get("incident");  // links from Slack, Teams, PagerDuty, Jira
 let showTools = false;
 let showAllEvents = false;
 let busy = false;

@@ -136,7 +136,8 @@ def clear_caches() -> None:
 
 
 # The alert webhook checks its own token (OPSRELAY_WEBHOOK_TOKEN), so sources need no user account.
-PUBLIC = {("GET", "/"), ("GET", "/ping"), ("POST", "/alerts")}
+# Routes that authenticate themselves: /alerts with its webhook token, Slack with its signature.
+PUBLIC = {("GET", "/"), ("GET", "/ping"), ("POST", "/alerts"), ("POST", "/integrations/slack/actions")}
 
 
 class AuthMiddleware:

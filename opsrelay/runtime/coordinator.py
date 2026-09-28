@@ -48,7 +48,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from .. import auth, evals, jobs, ops_metrics, policy_admin, rbac, secrets
+from .. import auth, evals, integrations, jobs, ops_metrics, policy_admin, rbac, secrets
 from ..approvals import ApprovalError
 from ..config import get_settings
 from ..intake.alerts import UnrecognizedAlert
@@ -115,6 +115,45 @@ async def alerts_webhook(request: Request) -> JSONResponse:
 
 
 app.router.routes.insert(0, Route("/alerts", alerts_webhook, methods=["POST"]))
+
+
+def _decide_from_slack(approval_id: str, approve: bool, principal: auth.Principal) -> dict[str, Any]:
+    svc = service()
+    approval = svc.store.get_approval(approval_id)
+    if approval is None:
+        raise KeyError(f"Unknown approval {approval_id}")
+    incident = svc.store.get_incident(approval["incident_id"]) or {}
+    role = rbac.authorize_decision(principal, approval["risk"], approval.get("severity") or incident.get("severity"))
+    try:
+        decided = svc.decide_approval(
+            approval_id, approve=approve, approver=principal.name, note="via Slack", role=role, verified=True, run=False
+        )
+    except ApprovalError as e:
+        raise ValueError(str(e)) from e
+    _in_background(decided["approval"]["incident_id"], decision_prompt(decided["approval"]))
+    return decided["approval"]
+
+
+def _slack_click(payload: dict[str, Any]) -> None:
+    text = integrations.handle_slack_action(payload, _decide_from_slack)
+    integrations.respond_in_slack(payload.get("response_url", ""), text)
+
+
+async def slack_actions(request: Request) -> JSONResponse:
+    """POST /integrations/slack/actions: Approve / Reject buttons. Verified by Slack's request
+    signature; answered at once (Slack allows 3 s), with the outcome posted to the message after."""
+    body = await request.body()
+    headers = request.headers
+    if not integrations.verify_slack(
+        body, headers.get("x-slack-request-timestamp", ""), headers.get("x-slack-signature", "")
+    ):
+        return JSONResponse({"error": "invalid Slack signature"}, status_code=401)
+    payload = integrations.parse_slack_form(body)
+    threading.Thread(target=_slack_click, args=(payload,), name="slack-action", daemon=True).start()
+    return JSONResponse({})
+
+
+app.router.routes.insert(0, Route("/integrations/slack/actions", slack_actions, methods=["POST"]))
 
 
 def _in_background(incident_id: str, prompt: str) -> None:

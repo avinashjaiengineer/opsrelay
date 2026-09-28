@@ -113,7 +113,24 @@ class OpsRelayStack(Stack):
             "OPSRELAY_MODEL_PROVIDER": model_provider,
             "OPSRELAY_BEDROCK_MODEL_ID": model_id,
         }
-        for key in ("auth_mode", "oidc_issuer", "oidc_audience", "dev_users"):
+        # Secrets (tokens, keys, webhook URLs) should be Secrets Manager ARNs: see opsrelay.secrets.
+        for key in (
+            "auth_mode",
+            "oidc_issuer",
+            "oidc_audience",
+            "dev_users",
+            "public_url",
+            "slack_bot_token",
+            "slack_channel",
+            "slack_signing_secret",
+            "slack_users",
+            "teams_webhook_url",
+            "pagerduty_routing_key",
+            "jira_url",
+            "jira_email",
+            "jira_api_token",
+            "jira_project",
+        ):
             if ctx(key):
                 common_env[f"OPSRELAY_{key.upper()}"] = str(ctx(key))
         model_access = iam.PolicyStatement(

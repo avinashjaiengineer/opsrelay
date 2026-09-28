@@ -36,6 +36,18 @@ def _settings(monkeypatch, tmp_path):
         "AUTH_MODE",
         "EMBEDDINGS",
         "RUNBOOK_DIR",
+        "PUBLIC_URL",
+        "SLACK_BOT_TOKEN",
+        "SLACK_CHANNEL",
+        "SLACK_SIGNING_SECRET",
+        "SLACK_USERS",
+        "TEAMS_WEBHOOK_URL",
+        "PAGERDUTY_ROUTING_KEY",
+        "JIRA_URL",
+        "JIRA_API_TOKEN",
+        "JIRA_EMAIL",
+        "JIRA_PROJECT",
+        "DEV_USERS",
     ):
         monkeypatch.delenv(f"OPSRELAY_{key}", raising=False)
     monkeypatch.setenv("OPSRELAY_MODEL_PROVIDER", "offline")

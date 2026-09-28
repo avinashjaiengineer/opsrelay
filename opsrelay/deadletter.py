@@ -14,7 +14,9 @@ from .store import Record, Store, now_iso
 from .store.base import Commit, make_event, new_record
 
 
-def dead_letter(store: Store, incident_id: str, agent: str, request: str, attempts: list[str], error: str) -> Record:
+def dead_letter(
+    store: Store, incident_id: str, agent: str, request: str, attempts: list[str], error: str, *, escalate: bool = True
+) -> Record:
     letter = {
         "id": f"dlq-{uuid.uuid4().hex[:10]}",
         "incident_id": incident_id,
@@ -39,7 +41,8 @@ def dead_letter(store: Store, incident_id: str, agent: str, request: str, attemp
             ],
         )
     )
-    _hand_to_human(store, incident_id, f"the {agent} agent is unavailable ({letter['id']})")
+    if escalate:
+        _hand_to_human(store, incident_id, f"the {agent} agent is unavailable ({letter['id']})")
     return letter
 
 

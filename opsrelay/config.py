@@ -108,6 +108,21 @@ class Settings(BaseSettings):
     embeddings: Literal["auto", "bedrock", "lexical"] = "auto"
     runbook_dir: str = ""
 
+    # Integrations (opsrelay.integrations). Each is off until configured; secrets may be Secrets
+    # Manager references (see opsrelay.secrets). `public_url` is the dashboard, linked from messages.
+    public_url: str = ""
+    slack_bot_token: str = ""  # xoxb-...; needs chat:write
+    slack_channel: str = ""  # channel id, e.g. C0123456789
+    slack_signing_secret: str = ""  # verifies Approve/Reject button clicks
+    slack_users: str = ""  # YAML (file or secret): Slack user id -> OpsRelay name and roles
+    teams_webhook_url: str = ""  # a Teams Workflows / incoming webhook URL
+    pagerduty_routing_key: str = ""  # Events API v2 integration key
+    jira_url: str = ""  # https://your-site.atlassian.net
+    jira_email: str = ""
+    jira_api_token: str = ""
+    jira_project: str = ""  # project key, e.g. OPS
+    jira_issue_type: str = "Task"
+
     def endpoint_for(self, role: Role) -> str:
         return getattr(self, f"{role}_endpoint")
 

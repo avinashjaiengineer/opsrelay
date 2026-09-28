@@ -2,7 +2,7 @@
 
 import logging
 
-from . import approvals, memory, postmortem, runbooks, telemetry
+from . import approvals, integrations, memory, postmortem, runbooks, telemetry
 from .agents import Invoker, build_coordinator
 from .audit import verify_incident
 from .config import SPECIALISTS, Role, get_settings
@@ -65,6 +65,7 @@ class IncidentService:
             raise
         self.store.record(incident_id, "coordinator", "report", report)
         memory.remember_quietly(self.store, incident_id)  # if it closed; recover backfills misses
+        integrations.sync_quietly(self.store, incident_id)  # Slack, Teams, PagerDuty, Jira
         return report
 
     def open_incident(
