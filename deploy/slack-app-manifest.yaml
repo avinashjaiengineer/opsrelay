@@ -1,5 +1,9 @@
 # Slack app for OpsRelay: approval requests with Approve / Reject buttons.
 #
+# Two ways for clicks to reach OpsRelay. This manifest uses HTTPS (request_url + Signing Secret).
+# For Socket Mode instead (no public URL): set socket_mode_enabled: true, create an App-Level Token
+# with connections:write, and set OPSRELAY_SLACK_APP_TOKEN rather than the signing secret.
+#
 # 1. https://api.slack.com/apps -> Create New App -> From a manifest -> pick your workspace,
 #    paste this file (replace YOUR-OPSRELAY-URL with your HTTPS address), Create.
 # 2. Install to Workspace. Copy "Bot User OAuth Token" (xoxb-...) and, under Basic Information,

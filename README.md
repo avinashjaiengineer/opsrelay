@@ -266,7 +266,8 @@ Environment variables, prefixed `OPSRELAY_` (see `opsrelay/config.py`):
 | `RUNBOOK_DIR` | | A folder of your own Markdown runbooks (same id overrides a built-in) |
 | `PUBLIC_URL` | | The dashboard's address, linked from Slack, Teams, PagerDuty and Jira |
 | `ORIGIN_SECRET` | | Behind API Gateway or CloudFront: the `x-opsrelay-origin` value requests must carry |
-| `SLACK_BOT_TOKEN`, `SLACK_CHANNEL`, `SLACK_SIGNING_SECRET`, `SLACK_USERS` | | Slack messages and Approve/Reject buttons (see Integrations) |
+| `SLACK_BOT_TOKEN`, `SLACK_CHANNEL`, `SLACK_USERS` | | Slack messages and Approve/Reject buttons (see Integrations) |
+| `SLACK_APP_TOKEN` or `SLACK_SIGNING_SECRET` | | Button clicks over Socket Mode, or over HTTPS with signed requests |
 | `TEAMS_WEBHOOK_URL` | | Microsoft Teams Workflows or incoming-webhook URL |
 | `PAGERDUTY_ROUTING_KEY` | | PagerDuty Events API v2 integration key |
 | `JIRA_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, `JIRA_PROJECT`, `JIRA_ISSUE_TYPE` | | Jira Cloud tickets |
@@ -421,9 +422,19 @@ Configure any of them with the `OPSRELAY_SLACK_*`, `TEAMS_*`, `PAGERDUTY_*` and 
 delivered by a durable job with retries, so a restart neither loses nor repeats one, and a failing
 channel never holds up the incident.
 
-**Approving from Slack:** create a Slack app with a bot token (`chat:write`), turn on
-Interactivity with the request URL `https://<your OpsRelay>/integrations/slack/actions`, and set
-`OPSRELAY_SLACK_SIGNING_SECRET`. Map Slack users to OpsRelay users and roles in
+**Approving from Slack:** create a Slack app with a bot token (`chat:write`) and choose how button
+clicks reach OpsRelay:
+
+- **Socket Mode** (simplest; no public URL): turn on Socket Mode and Interactivity in the app, and
+  set `OPSRELAY_SLACK_APP_TOKEN` to its App-Level Token (`xapp-`, scope `connections:write`).
+  OpsRelay opens the connection to Slack itself (`pip install "opsrelay[slack]"`).
+- **HTTPS**: turn on Interactivity with the request URL
+  `https://<your OpsRelay>/integrations/slack/actions` and set `OPSRELAY_SLACK_SIGNING_SECRET`
+  (Basic Information → App Credentials → Signing Secret, 32 hex characters; not the `xapp-` token).
+
+Secrets can be Secrets Manager references, including one key of a key/value secret
+(`secretsmanager:opsrelay/slack#bot-token`). The `integrations` API action shows what's on and
+whether Socket Mode is connected. Map Slack users to OpsRelay users and roles in
 `OPSRELAY_SLACK_USERS` (or add `slack_id` to entries in the dev users file):
 
 ```yaml
