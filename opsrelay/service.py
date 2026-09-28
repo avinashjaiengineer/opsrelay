@@ -74,16 +74,20 @@ class IncidentService:
         service: str | None = None,
         external_ref: str | None = None,
         run: bool = True,
+        incident_id: str | None = None,
+        alert: Record | None = None,
     ) -> Record:
+        """Open an incident. `incident_id` is given by alert intake, which has already deduplicated
+        (see opsrelay.intake.router); `alert` is the normalized alert that raised it."""
         if not title.strip():
             raise ValueError("title is required")
-        if external_ref:
+        if external_ref and incident_id is None:
             for existing in self.store.list_incidents(limit=200):
                 if existing.get("external_ref") == external_ref and existing["status"] not in TERMINAL:
                     return {"incident": existing, "report": None, "deduplicated": True}
         created = now_iso()
         incident = {
-            "id": new_incident_id(),
+            "id": incident_id or new_incident_id(),
             "title": title.strip()[:300],
             "description": description[:5000],
             "source": source,
@@ -91,6 +95,9 @@ class IncidentService:
             "service": service,
             "severity": None,
             "status": str(Status.OPEN),
+            "fingerprints": [external_ref] if external_ref else [],
+            "alerts_count": 1,
+            "alert": alert,
             "created_at": created,
             "updated_at": created,
         }
@@ -146,6 +153,14 @@ class IncidentService:
             "alert": alert,
             **self.open_incident(alert["title"], alert["description"], source="alertmanager", run=run),
         }
+
+    def ingest(self, message: object, *, queue: bool = True) -> list[Record]:
+        """Route an alert message (CloudWatch alarm event or SNS notification, Alertmanager webhook):
+        deduplicate, correlate, or open an incident. See opsrelay.intake."""
+        from .intake import alerts, router
+
+        parsed = alerts.parse(message, router.known_services(self))
+        return [router.ingest(self, alert, queue=queue) for alert in parsed]
 
     def get_incident(self, incident_id: str) -> Record:
         incident = self.store.get_incident(incident_id)

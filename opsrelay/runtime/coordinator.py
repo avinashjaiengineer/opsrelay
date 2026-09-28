@@ -15,6 +15,7 @@ Payloads are JSON objects with an "action":
     {"action": "test_policy", "action_name": "scale_service", "service": "...", "parameters": {"replicas": 4}}
     {"action": "get_contracts"}                               # lifecycle, agent contracts, transition owners
     {"action": "whoami"}                                      # the authenticated caller and roles
+    {"action": "ingest_alert", "message": {...}}              # CloudWatch alarm event / SNS / Alertmanager
     {"action": "list_policies"} / {"action": "propose_policy", "text": "<yaml>"}
     {"action": "review_policy", "version": "v2", "approve": true} / {"action": "activate_policy", "version": "v2"}
 
@@ -27,15 +28,23 @@ queued as a durable job (opsrelay.jobs) and a worker runs it (the runtime report
 while it does). A job survives a restart. Poll with get_incident.
 """
 
+import hmac
 import logging
 import threading
 from typing import Any
 
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 from pydantic import ValidationError
+from starlette.concurrency import run_in_threadpool
+from starlette.requests import Request
+from starlette.responses import JSONResponse
+from starlette.routing import Route
 
-from .. import auth, jobs, policy_admin, rbac
+from .. import auth, jobs, policy_admin, rbac, secrets
 from ..approvals import ApprovalError
+from ..config import get_settings
+from ..intake.alerts import UnrecognizedAlert
+from ..intake.sqs import SqsIntake
 from ..lifecycle import IllegalTransition
 from ..service import IncidentService, decision_prompt, new_incident_prompt
 
@@ -61,13 +70,41 @@ def _require(payload: dict[str, Any], *keys: str) -> None:
         raise ValueError(f"missing field(s): {', '.join(missing)}")
 
 
+_intake: SqsIntake | None = None
+
+
 def start_worker():  # noqa: ANN201
-    """Start this process's job worker, reporting HealthyBusy to AgentCore while a job runs."""
+    """Start this process's job worker (reporting HealthyBusy to AgentCore while a job runs), and,
+    with OPSRELAY_INTAKE_QUEUE_URL set, its SQS alert consumer."""
+    global _intake
+    settings = get_settings()
+    if settings.intake_queue_url and _intake is None:
+        _intake = SqsIntake(settings.intake_queue_url, service, region=settings.aws_region).start()
     return jobs.ensure_worker(
         service,
         on_busy=lambda job: app.add_async_task(job["action"], {"incident_id": job["incident_id"], "job": job["id"]}),
         on_idle=lambda task_id: task_id is not None and app.complete_async_task(task_id),
     )
+
+
+async def alerts_webhook(request: Request) -> JSONResponse:
+    """POST /alerts: Alertmanager webhooks (or CloudWatch/SNS JSON). Needs
+    `Authorization: Bearer <OPSRELAY_WEBHOOK_TOKEN>`; disabled when no token is configured."""
+    expected = secrets.resolve(get_settings().webhook_token)
+    if not expected:
+        return JSONResponse({"error": "the alert webhook is disabled (set OPSRELAY_WEBHOOK_TOKEN)"}, status_code=404)
+    presented = request.headers.get("authorization", "")
+    if not hmac.compare_digest(presented.encode(), f"Bearer {expected}".encode()):
+        return JSONResponse({"error": "invalid webhook token"}, status_code=401)
+    try:
+        results = await run_in_threadpool(service().ingest, await request.json())
+    except (UnrecognizedAlert, ValueError) as e:
+        return JSONResponse({"error": str(e)}, status_code=400)
+    start_worker()
+    return JSONResponse({"results": results})
+
+
+app.router.routes.insert(0, Route("/alerts", alerts_webhook, methods=["POST"]))
 
 
 def _in_background(incident_id: str, prompt: str) -> None:
@@ -174,6 +211,15 @@ def handle(payload: dict[str, Any]) -> dict[str, Any]:
                 float(payload.get("confidence", 0.95)),
             )
         }
+    if action == "ingest_alert":
+        if "message" not in payload:
+            raise ValueError(
+                "missing field: message (a CloudWatch alarm event, SNS notification or Alertmanager payload)"
+            )
+        results = svc.ingest(payload["message"])
+        if any(r.get("job_id") for r in results):
+            start_worker()
+        return {"results": results}
     if action == "get_contracts":
         return svc.contracts()
     if action == "list_policies":
@@ -209,7 +255,7 @@ def invoke(payload: dict[str, Any]) -> dict[str, Any]:
         return handle(payload)
     except rbac.Forbidden as e:
         return {"error": f"forbidden: {e}"}
-    except (ValueError, KeyError, ApprovalError, IllegalTransition, ValidationError) as e:
+    except (ValueError, KeyError, ApprovalError, IllegalTransition, ValidationError, UnrecognizedAlert) as e:
         return {"error": str(e).strip("'\"")}
 
 

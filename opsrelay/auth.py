@@ -135,7 +135,8 @@ def clear_caches() -> None:
     _jwks_client.cache_clear()
 
 
-PUBLIC = {("GET", "/"), ("GET", "/ping")}
+# The alert webhook checks its own token (OPSRELAY_WEBHOOK_TOKEN), so sources need no user account.
+PUBLIC = {("GET", "/"), ("GET", "/ping"), ("POST", "/alerts")}
 
 
 class AuthMiddleware:

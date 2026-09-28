@@ -14,6 +14,7 @@
     opsrelay policy test scale_service inventory-service --replicas 4
     opsrelay contracts                    # lifecycle states, agent contracts, who may make each move
     opsrelay whoami                       # who you are to the coordinator, and your roles
+    opsrelay alert alarm.json             # ingest an alert: deduplicated, correlated, or a new incident
     opsrelay policy propose new.yaml      # then: policy approve v2 (a second admin), policy activate v2
     opsrelay users add "Jane" --roles sre,incident_commander   # dev-mode users; prints a token once
     opsrelay up                           # run all six agents locally + a dashboard at http://127.0.0.1:8080
@@ -185,6 +186,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--confidence", type=float, default=0.95, help="diagnosis confidence (default 0.95)")
     sub.add_parser("contracts", help="lifecycle states, agent contracts and who may make each move")
     sub.add_parser("whoami", help="who the coordinator thinks you are, and your roles")
+    p = sub.add_parser("alert", help="send an alert (CloudWatch alarm event, SNS notification or Alertmanager JSON)")
+    p.add_argument("file", help="a JSON file, or - for stdin")
     p = sub.add_parser("users", help="manage dev-mode users (OPSRELAY_AUTH_MODE=dev)")
     users_sub = p.add_subparsers(dest="users_cmd", required=True)
     p = users_sub.add_parser("add", help="add a user with a new token (printed once)")
@@ -254,6 +257,9 @@ def main(argv: list[str] | None = None) -> int:
         }
     elif args.cmd == "whoami":
         payload = {"action": "whoami"}
+    elif args.cmd == "alert":
+        text = sys.stdin.read() if args.file == "-" else Path(args.file).read_text(encoding="utf-8")
+        payload = {"action": "ingest_alert", "message": json.loads(text)}
     elif args.cmd == "show":
         payload = {"action": "get_incident", "incident_id": args.incident_id}
     elif args.cmd == "incidents":
@@ -304,6 +310,11 @@ def main(argv: list[str] | None = None) -> int:
     result = call(payload)
     if args.json or args.cmd in ("contracts",) or (args.cmd == "policy" and args.policy_cmd == "list"):
         print(json.dumps(result, indent=2, default=str))
+    elif args.cmd == "alert":
+        for r in result["results"]:
+            print(
+                f"{r['outcome']:<14} {r.get('incident_id') or '-'}  {r.get('note') or r.get('reason') or ''}".rstrip()
+            )
     elif args.cmd == "whoami":
         who = result["principal"]
         verified = "verified" if who["verified"] else "NOT verified"

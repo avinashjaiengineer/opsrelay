@@ -72,6 +72,14 @@ class Settings(BaseSettings):
     worker_poll_seconds: float = 1.0
     recovery_interval_seconds: float = 30
 
+    # Alert intake (opsrelay.intake): a new alert on a service that already has an open incident
+    # opened within this window is correlated with it rather than opening another. With
+    # `intake_queue_url` set, a consumer thread reads alerts from that SQS queue (EventBridge rule
+    # for CloudWatch alarms, or Alertmanager via SNS). `webhook_token` protects /alerts/alertmanager.
+    correlation_window_minutes: float = 30
+    intake_queue_url: str = ""
+    webhook_token: str = ""
+
     # Who may call the coordinator API (opsrelay.auth, opsrelay.rbac): "none" (development; the
     # approver is an unverified name), "dev" (named users with bearer tokens from `dev_users`, a
     # YAML file path or Secrets Manager reference) or "oidc" (JWTs, e.g. Amazon Cognito).
