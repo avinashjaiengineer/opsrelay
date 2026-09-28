@@ -17,6 +17,8 @@ Payloads are JSON objects with an "action":
     {"action": "search_runbooks", "query": "...", "category": "...", "service": "..."}
     {"action": "similar_incidents", "incident_id": "inc-..."} or {"action": "similar_incidents", "query": "..."}
     {"action": "get_postmortem", "incident_id": "inc-..."}   # Markdown; a draft for escalated incidents
+    {"action": "replay_incident", "incident_id": "inc-..."}  # rerun a simulated incident in a sandbox, diff
+    {"action": "list_evals"}                                  # saved `opsrelay eval --save` reports
     {"action": "whoami"}                                      # the authenticated caller and roles
     {"action": "ingest_alert", "message": {...}}              # CloudWatch alarm event / SNS / Alertmanager
     {"action": "run_job", "job_id": "job-..."}                # run one queued job now (the SQS worker path)
@@ -46,7 +48,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from .. import auth, jobs, ops_metrics, policy_admin, rbac, secrets
+from .. import auth, evals, jobs, ops_metrics, policy_admin, rbac, secrets
 from ..approvals import ApprovalError
 from ..config import get_settings
 from ..intake.alerts import UnrecognizedAlert
@@ -238,6 +240,11 @@ def handle(payload: dict[str, Any]) -> dict[str, Any]:
         return {"metrics": ops_metrics.compute(svc.store, int(payload.get("limit", 200)))}
     if action == "get_contracts":
         return svc.contracts()
+    if action == "replay_incident":  # on the configured model; `opsrelay replay --model` locally to compare
+        _require(payload, "incident_id")
+        return evals.replay(svc.store, payload["incident_id"])
+    if action == "list_evals":
+        return {"evals": svc.store.list_records("eval", limit=int(payload.get("limit", 20)))}
     if action == "get_postmortem":
         _require(payload, "incident_id")
         return svc.postmortem(payload["incident_id"])

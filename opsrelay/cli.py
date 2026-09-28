@@ -214,6 +214,16 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--target-version")
     p.add_argument("--confidence", type=float, default=0.95, help="diagnosis confidence (default 0.95)")
     p.add_argument("--runbook", help="the runbook the proposal cites (default: one that recommends the action)")
+    p = sub.add_parser("eval", help="score the agents on the evaluation cases (runs here, in a sandbox)")
+    p.add_argument("--runs", type=int, default=1, help="runs per case (default 1)")
+    p.add_argument("--model", help='"offline", or a Bedrock model id (default: OPSRELAY_MODEL_PROVIDER)')
+    p.add_argument("--cases", help="a cases YAML file (default: the built-in opsrelay/eval_cases.yaml)")
+    p.add_argument("--case", action="append", help="run only this case (repeatable)")
+    p.add_argument("--save", action="store_true", help="save the report as an eval record in the store")
+    p.add_argument("--fail-under", type=float, help="exit 1 if action accuracy is below this (0-1), or any unsafe")
+    p = sub.add_parser("replay", help="rerun a past simulated incident and show what the agents decide now")
+    p.add_argument("incident_id")
+    p.add_argument("--model", help='"offline", or a Bedrock model id (local replays only)')
     p = sub.add_parser("postmortem", help="an incident's postmortem as Markdown (a draft if it was escalated)")
     p.add_argument("incident_id")
     p.add_argument("-o", "--output", help="write to this file instead of printing")
@@ -274,6 +284,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "demo":
         return _demo(call, args.scenario, args.yes)
+    if args.cmd == "eval":
+        return _eval(args)
+    if args.cmd == "replay" and not (args.url or args.remote):
+        return _print_replay(_replay_local(args.incident_id, args.model), args.json)
 
     payload: dict[str, Any]
     if args.cmd == "simulate":
@@ -345,6 +359,8 @@ def main(argv: list[str] | None = None) -> int:
             "confidence": args.confidence,
             "runbook_id": args.runbook,
         }
+    elif args.cmd == "replay":
+        payload = {"action": "replay_incident", "incident_id": args.incident_id}
     elif args.cmd == "postmortem":
         payload = {"action": "get_postmortem", "incident_id": args.incident_id}
     elif args.cmd == "similar":
@@ -400,6 +416,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{d['decision']}  risk={d['risk']}  requires_human={d['requires_human']}  ({d['policy_version']})")
         for reason in d["reasons"]:
             print(f"  - {reason}")
+    elif args.cmd == "replay":
+        return _print_replay(result, False)
     elif args.cmd == "postmortem":
         if args.output:
             Path(args.output).write_text(result["markdown"], encoding="utf-8")
@@ -440,6 +458,50 @@ def main(argv: list[str] | None = None) -> int:
         inc_id = (result.get("incident") or {}).get("id")
         if inc_id:
             _print_incident(call({"action": "get_incident", "incident_id": inc_id}))
+    return 0
+
+
+def _eval(args: argparse.Namespace) -> int:
+    from . import evals
+    from .store import get_store
+
+    report = evals.evaluate(args.runs, args.model, args.cases, args.case)
+    if args.save:
+        evals.save_report(get_store(), report)
+    if args.json:
+        print(json.dumps(report, indent=2, default=str))
+    else:
+        print("\n".join(evals.report_rows(report)))
+        if args.save:
+            print(f"\nSaved as record eval/{report['id']}.")
+    s = report["summary"]
+    if args.fail_under is not None and ((s["action"] or 0) < args.fail_under or s["unsafe"] or s["errors"]):
+        return 1
+    return 0
+
+
+def _replay_local(incident_id: str, model: str | None) -> dict[str, Any]:
+    from . import evals
+    from .store import get_store
+
+    return evals.replay(get_store(), incident_id, model)
+
+
+def _print_replay(result: dict[str, Any], as_json: bool) -> int:
+    if as_json:
+        print(json.dumps(result, indent=2, default=str))
+        return 0
+    b, a = result["before"], result["after"]
+    print(f"Replayed {result['incident_id']} ({result['scenario']}) on {result['model']} in {result['seconds']}s")
+    for label, o in (("then", b), ("now ", a)):
+        proposals = ", ".join(f"{p['action']} ({p['runbook_id'] or 'no runbook'})" for p in o["proposals"]) or "none"
+        print(f"  {label}: {o['service']} {o['severity']} {o['category']} -> {proposals} -> {o['status']}")
+    if result["differences"]:
+        print("Differences:")
+        for d in result["differences"]:
+            print(f"  - {d}")
+    else:
+        print("No differences: the agents decide the same way.")
     return 0
 
 

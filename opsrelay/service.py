@@ -78,6 +78,7 @@ class IncidentService:
         run: bool = True,
         incident_id: str | None = None,
         alert: Record | None = None,
+        scenario: str | None = None,
     ) -> Record:
         """Open an incident. `incident_id` is given by alert intake, which has already deduplicated
         (see opsrelay.intake.router); `alert` is the normalized alert that raised it."""
@@ -101,6 +102,7 @@ class IncidentService:
             "fingerprints": [external_ref] if external_ref else [],
             "alerts_count": 1,
             "alert": alert,
+            "scenario": scenario,  # the simulated fault behind it, so it can be replayed (opsrelay.evals)
             "created_at": created,
             "updated_at": created,
         }
@@ -155,7 +157,9 @@ class IncidentService:
             return {"alert": alert}
         return {
             "alert": alert,
-            **self.open_incident(alert["title"], alert["description"], source="alertmanager", run=run),
+            **self.open_incident(
+                alert["title"], alert["description"], source="alertmanager", run=run, scenario=scenario
+            ),
         }
 
     def ingest(self, message: object, *, queue: bool = True) -> list[Record]:

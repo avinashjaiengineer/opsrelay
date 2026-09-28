@@ -30,6 +30,8 @@ ACTIONS: dict[str, frozenset[str]] = {
     "search_runbooks": READ,
     "similar_incidents": READ,
     "get_postmortem": READ,
+    "list_evals": READ,
+    "replay_incident": OPERATE,  # runs the agents (model cost), in a sandbox
     "get_policy": READ,
     "get_metrics": READ,
     "verify_audit": AUDIT,

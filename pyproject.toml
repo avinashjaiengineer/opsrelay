@@ -33,7 +33,7 @@ build-backend = "setuptools.build_meta"
 include = ["opsrelay*"]
 
 [tool.setuptools.package-data]
-opsrelay = ["dashboard.html", "policies.yaml", "runbooks/*.md"]
+opsrelay = ["dashboard.html", "policies.yaml", "eval_cases.yaml", "runbooks/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
