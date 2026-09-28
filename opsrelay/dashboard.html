@@ -354,6 +354,7 @@ function remediationCard(i, approvals) {
         <dt>Action</dt><dd><strong>${esc(a.action)}</strong> on ${esc(a.service)} ${chip(a.status)}</dd>
         <dt>Parameters</dt><dd>${params}</dd>
         <dt>Risk</dt><dd><strong>${esc(a.risk)}</strong>${a.agent_risk && a.agent_risk !== a.risk ? ` <span class="kind">(agent said ${esc(a.agent_risk)}; policy raised it)</span>` : ""}</dd>
+        <dt>Runbook</dt><dd>${a.runbook_id ? `<strong>${esc(a.runbook_id)}</strong>` : `<span class="kind">none cited</span>`}</dd>
         <dt>Rollback</dt><dd>${esc(a.rollback_plan || "")}</dd>
         <dt>Why</dt><dd class="clamp">${esc(a.rationale)}</dd>
       </dl>

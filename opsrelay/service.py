@@ -2,7 +2,7 @@
 
 import logging
 
-from . import approvals, telemetry
+from . import approvals, runbooks, telemetry
 from .agents import Invoker, build_coordinator
 from .audit import verify_incident
 from .config import SPECIALISTS, Role, get_settings
@@ -197,10 +197,21 @@ class IncidentService:
         return {**policy.doc, "version": policy.version}
 
     def test_policy(
-        self, action: str, service: str, parameters: Record | None = None, confidence: float = 0.95
+        self,
+        action: str,
+        service: str,
+        parameters: Record | None = None,
+        confidence: float = 0.95,
+        runbook_id: str | None = None,
     ) -> Record:
-        """What the policy engine would decide for a proposal, without recording anything."""
+        """What the policy engine would decide for a proposal, without recording anything. Without
+        `runbook_id`, assumes the proposal cites a runbook that recommends the action."""
         info = self.env.service_info(service)
+        if runbook_id:
+            runbook = runbooks.get(runbook_id)
+            runbook_actions = runbook.actions if runbook else None
+        else:
+            runbook_id, runbook_actions = "(assumed)", (action,)
         proposal = RemediationProposal(
             incident_id="inc-0000000000",
             action=action,
@@ -209,8 +220,10 @@ class IncidentService:
             risk="low",
             rollback_plan="n/a",
             rationale="policy test",
+            runbook_id=runbook_id,
         )
         facts = Facts(
+            runbook_actions=runbook_actions,
             service_tier=int(info["tier"]),
             service_max_replicas=int(info["max_replicas"]),
             deployed_versions=tuple(d["version"] for d in self.env.deployments(service)),
@@ -218,6 +231,14 @@ class IncidentService:
             proposals_so_far=0,
         )
         return get_policy(self.store).evaluate(proposal, facts).model_dump()
+
+    @staticmethod
+    def search_runbooks(
+        query: str, category: str | None = None, service: str | None = None, k: int = 3
+    ) -> list[Record]:
+        if not (query.strip() or category):
+            return [rb.public() for rb in runbooks.all_runbooks().values()]
+        return [rb.public(score) for rb, score in runbooks.search(query or category, k, category, service)]
 
     @staticmethod
     def contracts() -> Record:

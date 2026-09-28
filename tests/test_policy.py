@@ -5,9 +5,12 @@ import pytest
 from opsrelay.policy import Facts, load_policy
 from opsrelay.schemas import RemediationProposal
 
+ALL_ACTIONS = ("rollback_deployment", "restart_service", "scale_service", "flush_cache")
 
-def _facts(tier=2, confidence=0.95, proposals=0, versions=("1.0", "1.1")):
+
+def _facts(tier=2, confidence=0.95, proposals=0, versions=("1.0", "1.1"), runbook_actions=ALL_ACTIONS):
     return Facts(
+        runbook_actions=runbook_actions,
         service_tier=tier,
         service_max_replicas=8,
         deployed_versions=versions,
@@ -16,7 +19,7 @@ def _facts(tier=2, confidence=0.95, proposals=0, versions=("1.0", "1.1")):
     )
 
 
-def _decide(action, facts=None, risk="low", **parameters):
+def _decide(action, facts=None, risk="low", runbook_id="RB-TEST", **parameters):
     proposal = RemediationProposal(
         incident_id="inc-0123456789",
         action=action,
@@ -25,6 +28,7 @@ def _decide(action, facts=None, risk="low", **parameters):
         risk=risk,
         rollback_plan="undo",
         rationale="why",
+        runbook_id=runbook_id,
     )
     return load_policy().evaluate(proposal, facts or _facts())
 
@@ -96,3 +100,23 @@ def test_custom_policy_file(tmp_path):
         bad = tmp_path / "bad.yaml"
         bad.write_text("actions:\n  x: {risk: extreme}\n")
         load_policy(str(bad))
+
+
+def test_runbook_citation():
+    followed = _decide("scale_service", _facts(runbook_actions=("scale_service",)), runbook_id="RB-003", replicas=4)
+    assert followed.decision == "ALLOW" and "follows runbook RB-003" in followed.reasons
+
+    uncited = _decide("scale_service", runbook_id=None, replicas=4)
+    assert uncited.decision == "APPROVAL_REQUIRED" and "no runbook cited" in uncited.reasons[-1]
+
+    missing = _decide("scale_service", _facts(runbook_actions=None), runbook_id="RB-999", replicas=4)
+    assert missing.decision == "APPROVAL_REQUIRED" and "RB-999 does not exist" in missing.reasons[-1]
+
+    off = _decide(
+        "scale_service",
+        _facts(runbook_actions=("restart_service", "rollback_deployment")),
+        runbook_id="RB-002",
+        replicas=4,
+    )
+    assert off.decision == "APPROVAL_REQUIRED"
+    assert "RB-002 recommends restart_service, rollback_deployment; not scale_service" in off.reasons[-1]

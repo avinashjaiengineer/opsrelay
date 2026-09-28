@@ -12,7 +12,7 @@ an action runs, `recover` finishes the job: the execution engine reconciles with
 instead of guessing.
 """
 
-from . import executor, telemetry
+from . import executor, runbooks, telemetry
 from .environment import Environment
 from .lifecycle import IllegalTransition, Status, transition
 from .policy import Facts, get_policy
@@ -31,9 +31,11 @@ class PolicyDenied(ApprovalError):
         self.decision = decision
 
 
-def _facts(store: Store, env: Environment, incident: Record, service: str) -> Facts:
+def _facts(store: Store, env: Environment, incident: Record, service: str, runbook_id: str | None = None) -> Facts:
     info = env.service_info(service)
+    runbook = runbooks.get(runbook_id) if runbook_id else None
     return Facts(
+        runbook_actions=runbook.actions if runbook else None,
         service_tier=int(info.get("tier", 3)),
         service_max_replicas=int(info.get("max_replicas", 1)),
         deployed_versions=tuple(d["version"] for d in env.deployments(service)),
@@ -53,7 +55,7 @@ def propose(
             f"Proposals are accepted only while investigating; {incident['id']} is {incident['status']}"
         )
     try:
-        facts = _facts(store, env, incident, proposal.service)
+        facts = _facts(store, env, incident, proposal.service, proposal.runbook_id)
     except KeyError as e:
         raise ApprovalError(str(e).strip("'\"")) from e
 
@@ -69,6 +71,7 @@ def propose(
         "params": proposal.parameters,
         "rationale": proposal.rationale,
         "rollback_plan": proposal.rollback_plan,
+        "runbook_id": proposal.runbook_id,
         "agent_risk": proposal.risk,
         "risk": decision.risk,
         "severity": incident.get("severity"),

@@ -15,7 +15,7 @@ from typing import Any, Literal
 from pydantic import ValidationError
 from strands import tool
 
-from .. import approvals
+from .. import approvals, runbooks
 from ..contracts import CONTRACTS
 from ..environment import Environment
 from ..lifecycle import IllegalTransition, Status, status_of, transition
@@ -72,7 +72,19 @@ def _incident_view(store: Store, incident_id: str) -> dict:
     incident = store.get_incident(incident_id)
     if incident is None:
         return {"error": f"Unknown incident {incident_id}"}
-    keys = ("id", "action", "service", "params", "risk", "status", "decided_by", "note", "result", "policy")
+    keys = (
+        "id",
+        "action",
+        "service",
+        "params",
+        "runbook_id",
+        "risk",
+        "status",
+        "decided_by",
+        "note",
+        "result",
+        "policy",
+    )
     return {
         **incident,
         "approvals": [{k: a.get(k) for k in keys} for a in store.list_approvals(incident_id=incident_id)],
@@ -215,6 +227,24 @@ def triage_tools(store: Store, env: Environment, role: str = "triage") -> list:
     return [*common_tools(store), *observe.values(), submit_triage, report_inconclusive_triage]
 
 
+def knowledge_tools() -> dict[str, Any]:
+    @tool
+    def search_runbooks(query: str, category: str = "", service: str = "") -> str:
+        """Search the runbooks: the team's procedures for each kind of incident. Returns the best
+        matches, each with its id, the actions it recommends and its steps. Cite the id you follow.
+
+        Args:
+            query: What is wrong, in words, e.g. "pods OOMKilled after deploy, login latency high".
+            category: Optional failure mode (bad-deploy, memory-leak, saturation, dependency, unknown);
+                runbooks for it rank higher.
+            service: Optional affected service; runbooks written for it rank higher.
+        """
+        hits = runbooks.search(query or category, k=3, category=category or None, service=service or None)
+        return _json([rb.public(score) for rb, score in hits])
+
+    return {"search_runbooks": search_runbooks}
+
+
 def diagnostics_tools(store: Store, env: Environment, role: str = "diagnostics") -> list:
     @tool
     def search_logs(service: str, query: str = "") -> str:
@@ -300,19 +330,17 @@ def diagnostics_tools(store: Store, env: Environment, role: str = "diagnostics")
         return _json({"ok": True})
 
     observe = observability_tools(env)
-    return [*common_tools(store), *observe.values(), search_logs, get_recent_deployments, submit_diagnosis]
+    return [
+        *common_tools(store),
+        *observe.values(),
+        search_logs,
+        get_recent_deployments,
+        *knowledge_tools().values(),
+        submit_diagnosis,
+    ]
 
 
 def remediation_tools(store: Store, env: Environment, role: str = "remediation") -> list:
-    @tool
-    def get_runbook(topic: str) -> str:
-        """Find the runbook for a failure mode, e.g. "bad-deploy", "memory-leak", "saturation".
-
-        Args:
-            topic: Failure mode or keywords.
-        """
-        return env.runbook(topic)
-
     @tool
     def list_allowed_actions() -> str:
         """The actions the policy engine knows: base risk, whether a person must approve, the
@@ -327,6 +355,7 @@ def remediation_tools(store: Store, env: Environment, role: str = "remediation")
         risk: Literal["low", "medium", "high", "critical"],
         rollback_plan: str,
         rationale: str,
+        runbook_id: str = "",
         replicas: int = 0,
         target_version: str = "",
     ) -> str:
@@ -341,6 +370,8 @@ def remediation_tools(store: Store, env: Environment, role: str = "remediation")
             risk: Your own assessment of the risk. The policy may raise it, never lower it.
             rollback_plan: How to undo this action if it makes things worse.
             rationale: Why this action, citing the diagnosis and the runbook.
+            runbook_id: The id of the runbook you follow, from search_runbooks (e.g. "RB-002"). An
+                uncited action, or one the runbook doesn't recommend, needs a person's approval.
             replicas: For scale_service only: the new replica count.
             target_version: For rollback_deployment only (optional): the version to roll back to.
         """
@@ -358,6 +389,7 @@ def remediation_tools(store: Store, env: Environment, role: str = "remediation")
                 risk=risk,
                 rollback_plan=rollback_plan,
                 rationale=rationale,
+                runbook_id=runbook_id or None,
             )
         except ValidationError as e:
             return _invalid("RemediationProposal", e)
@@ -408,7 +440,7 @@ def remediation_tools(store: Store, env: Environment, role: str = "remediation")
         *common_tools(store),
         observe["get_service_info"],
         observe["get_metrics"],
-        get_runbook,
+        *knowledge_tools().values(),
         list_allowed_actions,
         submit_proposal,
         decline_remediation,

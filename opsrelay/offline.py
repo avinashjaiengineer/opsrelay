@@ -246,10 +246,17 @@ def diagnostics_policy(s: Script) -> Call | str:
     )
 
 
-RUNBOOK_ACTIONS = {
-    "bad-deploy": ("rollback_deployment", "high", "Redeploy the release that was rolled back."),
-    "memory-leak": ("restart_service", "medium", "None needed: a restart does not change the deployed version."),
-    "saturation": ("scale_service", "low", "Scale back to the previous replica count."),
+# The action this playbook prefers for each failure mode, if the runbook recommends it.
+PREFERRED_ACTION = {
+    "bad-deploy": "rollback_deployment",
+    "memory-leak": "restart_service",
+    "saturation": "scale_service",
+}
+ACTION_PLAN = {
+    "rollback_deployment": ("high", "Redeploy the release that was rolled back."),
+    "restart_service": ("medium", "None needed: a restart does not change the deployed version."),
+    "scale_service": ("low", "Scale back to the previous replica count."),
+    "flush_cache": ("low", "None needed: the cache refills from the source of truth."),
 }
 
 
@@ -275,14 +282,19 @@ def remediation_policy(s: Script) -> Call | str:
         )
 
     category = incident.get("category", "unknown")
-    if not s.called("get_runbook"):
-        return Call("get_runbook", {"topic": category})
-    if category not in RUNBOOK_ACTIONS:
-        return Call(
-            "decline_remediation",
-            {"incident_id": iid, "reason": f"No runbook action fits category '{category}'."},
-        )
-    action, risk, rollback_plan = RUNBOOK_ACTIONS[category]
+    hits = s.result("search_runbooks")
+    if hits is None:
+        query = f"{incident.get('title', '')}. {incident.get('root_cause', '')}"
+        return Call("search_runbooks", {"query": query, "category": category, "service": service or ""})
+    fitting = [h for h in hits if category in h["categories"]]
+    preferred = PREFERRED_ACTION.get(category)
+    runbook = next((h for h in fitting if preferred in h["recommended_actions"]), fitting[0] if fitting else None)
+    actions = [a for a in (runbook or {}).get("recommended_actions", []) if a in ACTION_PLAN]
+    if runbook is None or not actions:
+        cited = f"Runbook {runbook['id']} recommends no automated action" if runbook else "No runbook fits"
+        return Call("decline_remediation", {"incident_id": iid, "reason": f"{cited} for category '{category}'."})
+    action = preferred if preferred in actions else actions[0]
+    risk, rollback_plan = ACTION_PLAN[action]
     extra: dict[str, Any] = {}
     if action == "scale_service":
         info = s.result("get_service_info")
@@ -297,7 +309,8 @@ def remediation_policy(s: Script) -> Call | str:
             "service": service,
             "risk": risk,
             "rollback_plan": rollback_plan,
-            "rationale": f"Runbook '{category}': {incident.get('recommended_action', '')}",
+            "rationale": f"Runbook {runbook['id']} ({runbook['title']}): {incident.get('recommended_action', '')}",
+            "runbook_id": runbook["id"],
             **extra,
         },
     )

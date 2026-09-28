@@ -102,6 +102,12 @@ class Settings(BaseSettings):
     # Remediation policy (see opsrelay/policies.yaml). Empty: the built-in policy.
     policy_file: str = ""
 
+    # Retrieval (opsrelay.knowledge, opsrelay.runbooks, opsrelay.memory): "auto" embeds with
+    # Amazon Titan Text Embeddings v2 when the agents run on Bedrock, else a local lexical embedder.
+    # `runbook_dir` adds your own Markdown runbooks (same id overrides a built-in).
+    embeddings: Literal["auto", "bedrock", "lexical"] = "auto"
+    runbook_dir: str = ""
+
     def endpoint_for(self, role: Role) -> str:
         return getattr(self, f"{role}_endpoint")
 

@@ -29,6 +29,8 @@ class Facts:
     deployed_versions: tuple[str, ...]  # oldest first; the last one is running
     diagnosis_confidence: float | None
     proposals_so_far: int
+    # The actions the cited runbook recommends; None if no runbook was cited or it doesn't exist.
+    runbook_actions: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -98,6 +100,13 @@ class Policy:
             needs_human = True
             notes.append(f"diagnosis confidence {facts.diagnosis_confidence:.2f} needs human review")
 
+        runbook_note = self._runbook_check(proposal, facts)
+        if runbook_note:
+            needs_human = True
+            notes.append(runbook_note)
+        elif proposal.runbook_id:
+            notes.append(f"follows runbook {proposal.runbook_id}")
+
         if deny:
             return self._decide("DENY", risk, deny)
         at_risk = defaults.get("human_required_at_risk", "medium")
@@ -107,6 +116,19 @@ class Policy:
         if needs_human:
             return self._decide("APPROVAL_REQUIRED", risk, notes)
         return self._decide("ALLOW", risk, [*notes, f"{risk} risk; policy allows it without approval"])
+
+    def _runbook_check(self, proposal: RemediationProposal, facts: Facts) -> str | None:
+        """Why a person must look at a proposal that doesn't follow a runbook, or None."""
+        if not self.doc.get("runbooks", {}).get("require_citation", False):
+            return None
+        if not proposal.runbook_id:
+            return "no runbook cited; a person must approve"
+        if facts.runbook_actions is None:
+            return f"runbook {proposal.runbook_id} does not exist; a person must approve"
+        if proposal.action not in facts.runbook_actions:
+            recommended = ", ".join(facts.runbook_actions) or "no automated action"
+            return f"{proposal.runbook_id} recommends {recommended}; not {proposal.action}. A person must approve"
+        return None
 
     def _decide(self, decision: str, risk: Risk, reasons: list[str]) -> PolicyDecision:
         return PolicyDecision(

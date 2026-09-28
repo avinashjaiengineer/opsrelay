@@ -26,6 +26,14 @@ def _investigating(store, confidence=0.95):
     return iid
 
 
+RUNBOOK_FOR = {
+    "restart_service": "RB-002",
+    "scale_service": "RB-003",
+    "rollback_deployment": "RB-001",
+    "flush_cache": "RB-005",
+}
+
+
 def _proposal(iid, action="restart_service", service="auth-service", risk="medium", **parameters):
     return RemediationProposal(
         incident_id=iid,
@@ -35,6 +43,7 @@ def _proposal(iid, action="restart_service", service="auth-service", risk="mediu
         risk=risk,
         rollback_plan="undo",
         rationale="because",
+        runbook_id=RUNBOOK_FOR.get(action),
     )
 
 

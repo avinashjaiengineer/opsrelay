@@ -26,6 +26,11 @@ confidence:
   # Below this: a person must approve, even for actions that don't normally need approval.
   human_required_below: 0.90
 
+runbooks:
+  # A proposal must cite a runbook (opsrelay/runbooks, OPSRELAY_RUNBOOK_DIR) that recommends its
+  # action. If it cites none, or the runbook recommends something else, a person must approve.
+  require_citation: true
+
 actions:
   rollback_deployment:
     risk: high

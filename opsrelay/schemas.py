@@ -62,6 +62,7 @@ class RemediationProposal(Contract):
     risk: Risk  # the agent's own assessment; the policy engine may only raise it
     rollback_plan: Text
     rationale: Text
+    runbook_id: ShortText | None = None  # the runbook this action follows (see opsrelay.runbooks)
 
 
 class RemediationDecline(Contract):

@@ -1,6 +1,6 @@
 import pytest
 
-from opsrelay import telemetry
+from opsrelay import runbooks, telemetry
 from opsrelay.config import get_settings
 from opsrelay.environment import SimulatedEnvironment
 from opsrelay.jobs import stop_worker
@@ -18,6 +18,7 @@ def _clear_caches() -> None:
     get_store.cache_clear()
     get_policy.cache_clear()
     reset_breakers()
+    runbooks.clear_cache()
 
 
 @pytest.fixture(autouse=True)
@@ -33,6 +34,8 @@ def _settings(monkeypatch, tmp_path):
         "INTAKE_QUEUE_URL",
         "WEBHOOK_TOKEN",
         "AUTH_MODE",
+        "EMBEDDINGS",
+        "RUNBOOK_DIR",
     ):
         monkeypatch.delenv(f"OPSRELAY_{key}", raising=False)
     monkeypatch.setenv("OPSRELAY_MODEL_PROVIDER", "offline")

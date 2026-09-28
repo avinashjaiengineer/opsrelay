@@ -213,6 +213,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--replicas", type=int)
     p.add_argument("--target-version")
     p.add_argument("--confidence", type=float, default=0.95, help="diagnosis confidence (default 0.95)")
+    p.add_argument("--runbook", help="the runbook the proposal cites (default: one that recommends the action)")
+    p = sub.add_parser("runbooks", help='list runbooks, or search them: opsrelay runbooks "pods OOMKilled"')
+    p.add_argument("query", nargs="?", default="")
+    p.add_argument("--category")
+    p.add_argument("--service")
     sub.add_parser("contracts", help="lifecycle states, agent contracts and who may make each move")
     sub.add_parser("whoami", help="who the coordinator thinks you are, and your roles")
     sub.add_parser("metrics", help="MTTA, MTTR, time per stage, agent latency and failures, policy decisions")
@@ -333,7 +338,10 @@ def main(argv: list[str] | None = None) -> int:
             "service": args.service,
             "parameters": parameters,
             "confidence": args.confidence,
+            "runbook_id": args.runbook,
         }
+    elif args.cmd == "runbooks":
+        payload = {"action": "search_runbooks", "query": args.query, "category": args.category, "service": args.service}
     elif args.cmd == "contracts":
         payload = {"action": "get_contracts"}
     else:
@@ -382,6 +390,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{d['decision']}  risk={d['risk']}  requires_human={d['requires_human']}  ({d['policy_version']})")
         for reason in d["reasons"]:
             print(f"  - {reason}")
+    elif args.cmd == "runbooks":
+        for rb in result["runbooks"]:
+            score = f"  score {rb['score']:.2f}" if "score" in rb else ""
+            print(f"{rb['id']}  {rb['title']}{score}")
+            print(f"    actions: {', '.join(rb['recommended_actions'])}")
     elif args.cmd == "approvals":
         _print_approvals(result["approvals"])
     elif args.cmd == "incidents":

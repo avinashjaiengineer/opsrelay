@@ -11,7 +11,7 @@ only in the simulated environment.
 
 from typing import Any
 
-from ..environment import ACTIONS, Environment, find_runbook
+from ..environment import ACTIONS, Environment
 from ..store import Record
 from .catalog import ServiceCatalog
 from .cloudwatch import CloudWatchLogs, CloudWatchMetrics
@@ -94,9 +94,6 @@ class AwsEnvironment(Environment):
         if not self._deployable(service):
             return []
         return self.deployer.deployments(self.catalog.get(service))
-
-    def runbook(self, topic: str) -> str:
-        return find_runbook(topic)
 
     # Action
     def execute(self, action: str, service: str, params: Record, idempotency_key: str | None = None) -> Record:

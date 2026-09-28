@@ -118,7 +118,11 @@ class OpsRelayStack(Stack):
                 common_env[f"OPSRELAY_{key.upper()}"] = str(ctx(key))
         model_access = iam.PolicyStatement(
             actions=["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
-            resources=model_resources(model_id, self.region, self.account),
+            resources=[
+                *model_resources(model_id, self.region, self.account),
+                # Runbook and incident-memory retrieval (opsrelay.knowledge)
+                f"arn:aws:bedrock:{self.region}::foundation-model/amazon.titan-embed-text-v2:0",
+            ],
         )
 
         def queue_with_dlq(name: str, visibility: Duration) -> sqs.Queue:

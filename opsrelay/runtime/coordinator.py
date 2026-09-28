@@ -14,6 +14,7 @@ Payloads are JSON objects with an "action":
     {"action": "get_policy"}                                  # the loaded remediation policy
     {"action": "test_policy", "action_name": "scale_service", "service": "...", "parameters": {"replicas": 4}}
     {"action": "get_contracts"}                               # lifecycle, agent contracts, transition owners
+    {"action": "search_runbooks", "query": "...", "category": "...", "service": "..."}
     {"action": "whoami"}                                      # the authenticated caller and roles
     {"action": "ingest_alert", "message": {...}}              # CloudWatch alarm event / SNS / Alertmanager
     {"action": "run_job", "job_id": "job-..."}                # run one queued job now (the SQS worker path)
@@ -214,6 +215,7 @@ def handle(payload: dict[str, Any]) -> dict[str, Any]:
                 payload["service"],
                 payload.get("parameters") or {},
                 float(payload.get("confidence", 0.95)),
+                payload.get("runbook_id"),
             )
         }
     if action == "ingest_alert":
@@ -234,6 +236,10 @@ def handle(payload: dict[str, Any]) -> dict[str, Any]:
         return {"metrics": ops_metrics.compute(svc.store, int(payload.get("limit", 200)))}
     if action == "get_contracts":
         return svc.contracts()
+    if action == "search_runbooks":
+        return {
+            "runbooks": svc.search_runbooks(payload.get("query") or "", payload.get("category"), payload.get("service"))
+        }
     if action == "list_policies":
         return {"policies": policy_admin.history(svc.store)}
     if action == "propose_policy":

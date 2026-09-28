@@ -33,40 +33,6 @@ ACTIONS: dict[str, dict[str, Any]] = {
     },
 }
 
-RUNBOOKS: dict[str, str] = {
-    "bad-deploy": (
-        "Runbook: error spike after a deployment\n"
-        "1. Confirm the error rate rose after the latest deploy (compare timestamps).\n"
-        "2. Check logs for new exception types introduced by the release.\n"
-        "3. Remediate: rollback_deployment to the previous version.\n"
-        "4. Verify error rate is back under 1% within 5 minutes; open a bug for the release owner."
-    ),
-    "memory-leak": (
-        "Runbook: memory exhaustion / OOMKilled\n"
-        "1. Confirm memory is near the limit and pods are being OOMKilled.\n"
-        "2. Check whether a recent deploy changed memory behaviour; if so prefer rollback.\n"
-        "3. Remediate: restart_service to reclaim memory (buys time, not a fix).\n"
-        "4. Verify memory and latency recover; file a follow-up to find the leak."
-    ),
-    "saturation": (
-        "Runbook: CPU saturation / traffic spike\n"
-        "1. Confirm CPU is above 85% across replicas and request rate is above baseline.\n"
-        "2. Rule out a bad deploy (no recent release) and a retry storm from a dependency.\n"
-        "3. Remediate: scale_service to about 2x current replicas, within max_replicas.\n"
-        "4. Verify CPU below 70% and p99 latency back to baseline."
-    ),
-}
-
-
-def find_runbook(topic: str) -> str:
-    t = topic.lower()
-    for key, text in RUNBOOKS.items():
-        words = key.replace("-", " ").split()
-        if key in t or any(w in t for w in words) or t in text.lower():
-            return text
-    return "No matching runbook. Available: " + ", ".join(RUNBOOKS)
-
-
 SEED_SERVICES: list[Record] = [
     {
         "name": "web-frontend",
@@ -177,9 +143,6 @@ class Environment(ABC):
 
     @abstractmethod
     def deployments(self, service: str) -> list[Record]: ...
-
-    @abstractmethod
-    def runbook(self, topic: str) -> str: ...
 
     @abstractmethod
     def execute(self, action: str, service: str, params: Record, idempotency_key: str | None = None) -> Record:
@@ -315,9 +278,6 @@ class SimulatedEnvironment(Environment):
 
     def deployments(self, service: str) -> list[Record]:
         return self._svc(service)["deployments"][-5:]
-
-    def runbook(self, topic: str) -> str:
-        return find_runbook(topic)
 
     # Action
     def reconcile(self, action: str, service: str, params: Record, idempotency_key: str) -> str:
