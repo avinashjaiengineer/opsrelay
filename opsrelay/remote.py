@@ -14,6 +14,7 @@ from a2a.client import ClientConfig
 from botocore.auth import SigV4Auth
 from botocore.awsrequest import AWSRequest
 from strands.agent.a2a_agent import A2AAgent
+from strands.agent.agent_result import AgentResult
 
 from .agents.factory import Invoker
 from .config import Role
@@ -57,6 +58,16 @@ def resolve_endpoint(endpoint: str) -> tuple[str, httpx.Auth | None, dict[str, s
     return endpoint.rstrip("/"), None, {}
 
 
+def reply_text(result: AgentResult) -> str:
+    """The specialist's reply as one string.
+
+    A streamed A2A reply arrives as one text block per chunk. `str(AgentResult)` puts a newline
+    after every block, which splits the reply mid-word, so join the blocks as they are.
+    """
+    blocks = result.message.get("content", [])
+    return "".join(b["text"] for b in blocks if isinstance(b, dict) and "text" in b).strip()
+
+
 def a2a_invoker(role: Role, endpoint: str, timeout: int = 600) -> Invoker:
     if not endpoint:
         raise ValueError(f"No A2A endpoint configured for the {role} agent (OPSRELAY_{role.upper()}_ENDPOINT)")
@@ -69,7 +80,6 @@ def a2a_invoker(role: Role, endpoint: str, timeout: int = 600) -> Invoker:
             # A runtime cannot know its own ARN when it is built, so its card may advertise a
             # placeholder URL. Always send to the endpoint we resolved.
             card.url = url + "/"
-            result = await agent.invoke_async(message)
-            return str(result).strip()
+            return reply_text(await agent.invoke_async(message))
 
     return invoke

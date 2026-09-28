@@ -2,8 +2,9 @@ import boto3
 import httpx
 import pytest
 from botocore.credentials import Credentials
+from strands.agent.agent_result import AgentResult
 
-from opsrelay.remote import SESSION_HEADER, AgentCoreSigV4, a2a_invoker, resolve_endpoint
+from opsrelay.remote import SESSION_HEADER, AgentCoreSigV4, a2a_invoker, reply_text, resolve_endpoint
 
 ARN = "arn:aws:bedrock-agentcore:us-west-2:123456789012:runtime/opsrelay_triage-AbC123"
 
@@ -38,6 +39,17 @@ def test_sigv4_signs_request():
     assert "/us-west-2/bedrock-agentcore/aws4_request" in authz
     assert "x-amzn-bedrock-agentcore-runtime-session-id" in authz
     assert signed.headers["x-amz-security-token"] == "token"
+
+
+def test_streamed_reply_chunks_are_joined_without_newlines():
+    chunks = ["The incident", " inc", "-541", "be1df42 affects", " checkout-api."]
+    result = AgentResult(
+        stop_reason="end_turn",
+        message={"role": "assistant", "content": [{"text": c} for c in chunks]},
+        metrics=None,
+        state={},
+    )
+    assert reply_text(result) == "The incident inc-541be1df42 affects checkout-api."
 
 
 def test_missing_endpoint_is_a_clear_error():
