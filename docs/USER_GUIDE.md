@@ -170,7 +170,16 @@ opsrelay simulate bad-deploy                         # open an incident; agents 
 opsrelay approvals                                   # list pending approvals
 opsrelay approve apr-xxxxxxxxxx --by <you>           # or: reject ... --note "why"
 opsrelay show inc-xxxxxxxxxx                         # full timeline and postmortem
+opsrelay postmortem inc-xxxxxxxxxx -o pm.md          # the postmortem as Markdown
+opsrelay similar inc-xxxxxxxxxx                      # similar past incidents
+opsrelay runbooks "OOMKilled"                        # search the runbooks
+opsrelay eval                                        # score the agents on the evaluation cases
 ```
+
+**From Slack:** with the Slack integration on, a proposal that needs a person is posted to your
+channel with **Approve** and **Reject** buttons; your Slack account is mapped to your OpsRelay user
+and role, so the same rules apply as in the dashboard. Teams, PagerDuty and Jira can be connected
+too (see the README's Integrations section).
 
 **Choosing the model:**
 
@@ -192,8 +201,10 @@ the CDK stack in `infra/` (API only, no dashboard).
 - **People stay in control.** Agents investigate and propose; only a person can make a change.
   The policy engine decides which actions need a person, and a rejection stops everything
   ([section 7](#7-when-a-person-says-no)).
-- **Runbooks get used.** Remediation starts from the runbook for the incident type, so fixes are
-  consistent no matter who is on call.
+- **Runbooks get used.** Remediation searches your runbooks and cites the one it follows; if it
+  proposes something the runbook doesn't recommend, a person has to approve, and the card says why.
+- **It remembers.** Similar past incidents, including fixes people rejected and why, are shown to
+  the agents and on the incident, so a correction only has to be made once.
 - **A complete audit trail.** Every agent handoff, tool call and human decision is recorded with
   who made it. That's useful for reviews, compliance and learning.
 - **Postmortems write themselves.** A first draft exists the moment the incident closes, built
@@ -215,20 +226,13 @@ hash-chained audit log are already done (see [How the governance layer works](#h
 
 **Safety and correctness**
 
-- **Flag proposals that go against the runbook.** In an earlier memory-leak run the agent
-  proposed scaling when the runbook said restart. The platform could compare each proposal with the
-  runbook's recommended action and show a warning on the approval card, or require a second
-  approver when they differ.
-- **Evaluate models against the scenarios.** A small evaluation suite could run every scenario
-  against a real model many times and score whether the diagnosis and proposed action were right.
-  It would have caught the scaling mistake before a person had to, and it's how to compare Nova,
-  Claude and future models fairly.
-- **Log in to the dashboard.** The dashboard has no login today, so the EC2 setup restricts it to
-  one IP address. Adding sign-in (for example Amazon Cognito, or an AgentCore JWT authorizer)
-  would make the approver's name come from a verified identity, not a text box.
+- ~~Flag proposals that go against the runbook~~: done. Proposals cite a runbook, and an
+  action the runbook doesn't recommend needs a person, with the reason on the card.
+- ~~Evaluate models against the scenarios~~: done. `opsrelay eval --model ... --runs N` scores
+  triage, diagnosis, action and escalation accuracy and unsafe proposals; `opsrelay replay`
+  reruns a past incident on a new model and diffs the decisions.
+- ~~Log in to the dashboard~~ and ~~roles~~: done (dev tokens or OIDC; six roles).
 - **Guardrails.** Add Bedrock Guardrails on the model.
-- **Roles.** Viewer, operator, incident commander, SRE, admin and auditor roles, so only some
-  people can approve high-risk actions or change the policy.
 
 **Connect it to real systems**
 
@@ -237,8 +241,8 @@ hash-chained audit log are already done (see [How the governance layer works](#h
   or Argo CD.
 - **Real alerts.** Accept alert webhooks from Alertmanager, or CloudWatch alarms through
   EventBridge, in place of the scenario buttons.
-- **Approve from chat.** Post the approval card to Slack or Teams with Approve and Reject buttons
-  that call the same `decide_approval` API.
+- ~~Approve from chat~~: done for Slack (signed buttons, mapped users, role checks); Teams cards
+  link to the dashboard. PagerDuty pages and Jira tickets follow SEV1 and escalated incidents.
 - **Publish updates.** Send the communications agent's updates to a status page and email,
   instead of only recording them.
 
@@ -252,10 +256,9 @@ hash-chained audit log are already done (see [How the governance layer works](#h
 
 **Intelligence**
 
-- **Runbook search and incident memory.** Retrieve relevant runbooks and similar past incidents
-  (with their postmortems and rejection notes) for diagnosis and remediation, so a correction only
-  has to be made once.
-- **Replay.** Re-run a recorded incident against a new agent or model version and compare.
+- ~~Runbook search and incident memory~~: done (Amazon Titan embeddings).
+- ~~Replay~~: done.
+- **A model per agent, chosen by eval scores.**
 
 **Running it**
 

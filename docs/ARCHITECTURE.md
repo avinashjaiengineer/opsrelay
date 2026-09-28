@@ -166,19 +166,53 @@ moves, delegations, policy decisions, executions, intake), exported over OTLP wh
 `ops_metrics.py` computes the operator's numbers (MTTA, MTTR, time per stage, agent health) from
 the audit trail, so they're available, and auditable, without a metrics backend.
 
+## Knowledge and memory
+
+Retrieval is deliberately small: runbooks are files in the repository (reviewed like code), and
+memories are records in the same store as incidents, so there is no vector database to run. At
+this scale a scan of the newest few hundred memories is fast; past that, the same interface can
+sit on OpenSearch Serverless or a Bedrock Knowledge Base. Embeddings come from Amazon Titan Text
+Embeddings v2 (256 dimensions) on Bedrock, with a deterministic lexical embedder for offline runs
+and as a fallback, and each memory records which embedder produced its vector. Similarity adds a
+boost for the same service and failure category, and an incident's "similar" list has a
+threshold, so unrelated incidents that only share words like "latency" don't appear.
+
+Retrieval informs the agents; the platform still decides. The policy engine checks the proposal
+against the runbook it cites, so a model that ignores its runbook gets a person, with the reason.
+Memories are written by the coordinator after a run, not by the agents, and backfilled by
+`recover`, so a crash can delay a memory but not lose it.
+
+## Evaluation and replay
+
+`evals.py` runs cases in sandboxes: a temporary SQLite store and a fresh simulated environment,
+with every specialist in-process and a simulated person who approves acceptable actions and
+rejects the rest. Scores come from the typed results and the audit trail, not from parsing model
+text. Replay uses the scenario recorded on a simulated incident and the decisions people made on
+it, so the only thing that changes between the original and the replay is the agents.
+
+## Integrations
+
+Notifications follow the incident's state rather than individual events: after each coordinator
+run, `integrations.sync` computes what the state calls for and creates each notification once
+(its id names the incident, event and channel). Delivery is a job, so it inherits leases,
+retries and dead letters; a notification that keeps failing is dead-lettered without escalating
+the incident. Slack decisions come back through a signed endpoint, map to OpsRelay users, and go
+through the same role check and approval engine as the dashboard.
+
 ## What to build next
 
 Done: atomic state + audit, execution leases and reconciliation, durable jobs (SQS-driven on AWS),
 A2A authentication, CloudWatch/ECS connectors, authentication and roles, audited policy changes,
 least-privilege IAM, Secrets Manager, event-driven intake with deduplication and correlation,
-OpenTelemetry metrics and traces, MTTA/MTTR. Still open:
+OpenTelemetry metrics and traces, MTTA/MTTR, runbook retrieval, incident memory, postmortem
+export, an evaluation suite and replay, Slack/Teams/PagerDuty/Jira. Still open:
 
-- **More sources and connectors:** PagerDuty, Datadog and Kubernetes events; EKS, your deploy tool,
-  a CMDB, ticketing.
+- **More sources and connectors:** Datadog and Kubernetes events, PagerDuty as an alert source;
+  EKS, your deploy tool, a CMDB; ServiceNow.
 - **Richer correlation:** across dependent services (the CMDB graph), not only the same service.
-- **Intelligence:** runbook retrieval, incident memory, an evaluation suite per agent, incident
-  replay against new model versions.
-- **Console:** server-sent events instead of polling; a React/TypeScript console; Slack or Teams
-  approvals.
+- **Intelligence:** a model per agent chosen by eval scores; eval cases from real incidents;
+  retrieval on a managed vector store past a few thousand memories.
+- **Console:** server-sent events instead of polling; a React/TypeScript console; Teams approvals
+  through a Teams bot (today Teams links to the dashboard).
 - **Operations:** multi-tenant isolation, disaster recovery, dashboards and alarms on the exported
   metrics.

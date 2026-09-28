@@ -162,7 +162,20 @@ While `opsrelay up` is running, open an agent's A2A card in your browser:
 The `a2a.request` and `a2a.response` rows in the timeline are the coordinator's real HTTP calls to
 these servers.
 
-## 6. Run the tests
+## 6. Runbooks, memory, evals
+
+```powershell
+opsrelay runbooks "pods OOMKilled" --category memory-leak   # which runbook fits, and what it recommends
+opsrelay similar inc-xxxxxxxxxx                              # past incidents like this one
+opsrelay postmortem inc-xxxxxxxxxx                           # the postmortem as Markdown
+opsrelay eval                                                # six cases, offline agents, a few seconds
+opsrelay replay inc-xxxxxxxxxx                               # rerun a simulated incident and diff
+```
+
+With `OPSRELAY_MODEL_PROVIDER=bedrock`, runbook and memory search use Amazon Titan embeddings, and
+`opsrelay eval --model global.amazon.nova-2-lite-v1:0` scores the real model.
+
+## 7. Run the tests
 
 ```powershell
 pytest                              # the whole suite, fully offline, about 15 seconds
@@ -189,8 +202,12 @@ What the suite covers:
 | `test_store.py` | SQLite and DynamoDB (moto) stores: compare-and-set status, hash chain, tamper detection |
 | `test_agents.py` | agent tools and their guards |
 | `test_infra.py` | the CDK stack synthesizes the expected AWS resources |
+| `test_knowledge.py` | embeddings, runbook search, runbook citations checked by policy |
+| `test_memory.py` | incident memory, similar incidents, postmortems and drafts |
+| `test_evals.py` | the eval suite catches a wrong agent; replay diffs decisions |
+| `test_integrations.py` | Slack, Teams, PagerDuty, Jira: outbox, retries, Slack signatures and roles |
 
-## 7. Next steps
+## 8. Next steps
 
 - **Use a real model instead of the scripted one:** see "Using a real model on Bedrock locally"
   in the [README](../README.md#using-a-real-model-on-bedrock-locally). Amazon Nova is the

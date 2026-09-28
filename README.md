@@ -16,6 +16,11 @@ approves, and only then does the platform execute, once. Every incident follows 
 machine**, every agent has a **typed contract** the platform enforces, and the audit log is a
 **tamper-evident hash chain**.
 
+The agents work from your **runbooks** (retrieved with Amazon Titan embeddings) and from **incident
+memory** (how similar incidents went, including fixes people rejected). An **evaluation suite** and
+**incident replay** measure them before a model or prompt change ships, and **Slack, Teams,
+PagerDuty and Jira** hear about incidents as they happen (Slack can approve from the message).
+
 ![OpsRelay dashboard: an alert fires, the agents investigate, a person approves, the incident is resolved](docs/images/workflow.gif)
 
 See the [user guide](docs/USER_GUIDE.md) for the whole workflow in screenshots, why it's useful,
@@ -57,12 +62,12 @@ OPEN -> TRIAGING -> INVESTIGATING -> AWAITING_APPROVAL -> REMEDIATING -> VERIFYI
 1. **Alert in** (`open`). From an alert (`simulate`), the API (`open_incident`) or the CLI.
 2. **Triage** (`triaging`). Triage submits a `TriageResult`: service, severity, customer impact, confidence.
 3. **Diagnose** (`investigating`). Diagnostics submits a `DiagnosisResult`: root cause, evidence with sources, affected component, confidence.
-4. **Propose.** Remediation submits a `RemediationProposal`: action, parameters, its own risk estimate, rollback plan.
-5. **Policy** (`awaiting_approval`). The policy engine (`opsrelay/policies.yaml`) returns ALLOW, APPROVAL_REQUIRED or DENY, with reasons. Diagnosis confidence below 0.70 is denied; below 0.90 always needs a person.
+4. **Propose.** Remediation searches the runbooks and similar past incidents, then submits a `RemediationProposal`: action, parameters, its own risk estimate, rollback plan, and the runbook it follows.
+5. **Policy** (`awaiting_approval`). The policy engine (`opsrelay/policies.yaml`) returns ALLOW, APPROVAL_REQUIRED or DENY, with reasons. Diagnosis confidence below 0.70 is denied; below 0.90 always needs a person; so does an action the cited runbook doesn't recommend.
 6. **Human gate.** A person approves or rejects. A rejection **escalates** the incident.
 7. **Execute** (`remediating`). The execution engine runs the action once, keyed by an idempotency key.
 8. **Verify** (`verifying`). The verification agent, not the one that proposed the fix, checks recovery; the platform cross-checks its claim against live metrics. No recovery means `failed`, then `escalated`.
-9. **Close** (`resolved`). Communications posts internal and customer updates, then submits a typed `Postmortem`.
+9. **Close** (`resolved`). Communications posts internal and customer updates, then submits a typed `Postmortem`. The incident is written to incident memory, and Slack, Teams, PagerDuty and Jira are updated.
 
 If an agent stays unavailable, calls are retried with backoff behind a circuit breaker; then the
 request goes to a dead-letter queue and the incident to a person.
@@ -234,6 +239,13 @@ Environment variables, prefixed `OPSRELAY_` (see `opsrelay/config.py`):
 | `WEBHOOK_TOKEN` | | Enables `POST /alerts` and is the bearer token it requires |
 | `CORRELATION_WINDOW_MINUTES` | `30` | New alerts on a service with an open incident this recent join it |
 | `JOB_QUEUE_URL` | | SQS queue for jobs (AWS): a Lambda runs them via `run_job`; no worker thread |
+| `EMBEDDINGS` | `auto` | `bedrock` (Amazon Titan Text Embeddings v2), `lexical` (offline), or `auto`: Titan when the agents run on Bedrock |
+| `RUNBOOK_DIR` | | A folder of your own Markdown runbooks (same id overrides a built-in) |
+| `PUBLIC_URL` | | The dashboard's address, linked from Slack, Teams, PagerDuty and Jira |
+| `SLACK_BOT_TOKEN`, `SLACK_CHANNEL`, `SLACK_SIGNING_SECRET`, `SLACK_USERS` | | Slack messages and Approve/Reject buttons (see Integrations) |
+| `TEAMS_WEBHOOK_URL` | | Microsoft Teams Workflows or incoming-webhook URL |
+| `PAGERDUTY_ROUTING_KEY` | | PagerDuty Events API v2 integration key |
+| `JIRA_URL`, `JIRA_EMAIL`, `JIRA_API_TOKEN`, `JIRA_PROJECT`, `JIRA_ISSUE_TYPE` | | Jira Cloud tickets |
 
 ## Governance and safety
 
@@ -253,7 +265,8 @@ Environment variables, prefixed `OPSRELAY_` (see `opsrelay/config.py`):
 | **Roles** | `rbac.py` | viewer, operator, sre, incident_commander, admin, auditor. Approving needs a role matching the risk and severity (SEV1 or critical: incident commander). Admins change policy but can't approve actions. |
 | **Audited policy changes** | `policy_admin.py` | Policy versions are proposed, reviewed by a *second* admin, and activated; each step is on the `policy` audit chain. |
 | **Tamper-evident audit** | `audit.py`, stores | Every event stores the previous event's hash; `opsrelay audit <incident>` finds the first altered or missing event. Events record the actor type, input and output hashes, and the agent, agent version, model and prompt version. |
-| **Untrusted input** | prompts | Alert and log text reach the agents as data; the prompts say so. |
+| **Runbook citations** | `policy.py`, `runbooks.py` | A proposal cites the runbook it follows. No citation, an unknown runbook, or an action the runbook doesn't recommend: a person must approve, and the policy says why ("RB-002 recommends restart_service, rollback_deployment; not scale_service"). |
+| **Untrusted input** | prompts, evals | Alert and log text reach the agents as data; the prompts say so, and the `prompt-injection` eval case checks it. |
 | **Agent-to-agent auth** | `a2a_auth.py`, `remote.py` | On AgentCore, SigV4 and IAM. Elsewhere, specialists require a shared bearer token (`OPSRELAY_A2A_TOKEN`; `opsrelay up` generates one per run). |
 | **Least-privilege IAM** | `infra/stack.py` | Bedrock access only to the configured model. DynamoDB writes limited per runtime by key prefix, mirroring the agent contracts. Secrets from Secrets Manager (`secrets.py`). |
 
@@ -322,6 +335,83 @@ Alertmanager -----> webhook POST /alerts, or SNS --> SQS ------^
   coordination, delegation, execution and intake. Set `OTEL_EXPORTER_OTLP_ENDPOINT` and
   `pip install "opsrelay[otel]"` to export them to any OpenTelemetry collector.
 
+## Knowledge: runbooks and incident memory
+
+**Runbooks** are Markdown files with YAML front matter (`opsrelay/runbooks/`, plus your own in
+`OPSRELAY_RUNBOOK_DIR`):
+
+```markdown
+---
+id: RB-002
+title: Memory exhaustion and OOMKilled pods
+categories: [memory-leak]
+services: []                                   # empty: any service
+actions: [restart_service, rollback_deployment]  # what it recommends; [] = diagnose, then escalate
+---
+1. Confirm memory is near the limit and pods are being OOMKilled. ...
+```
+
+The diagnostics and remediation agents search them with `search_runbooks` (Amazon Titan Text
+Embeddings v2 on Bedrock, a local lexical embedder offline, plus a boost for the matching category
+and service), and a proposal cites the runbook's id. The dashboard shows the runbook on the
+approval card.
+
+**Incident memory:** when an incident closes, OpsRelay records its symptoms, service, root cause,
+evidence, the action taken and its outcome, any proposals people rejected and why, how long it
+took, and the postmortem's lessons. `find_similar_incidents` gives the agents the closest past
+incidents, so a correction a person made once isn't needed twice; the dashboard shows them on
+each incident.
+
+```powershell
+opsrelay runbooks "pods OOMKilled after deploy" --category memory-leak
+opsrelay similar inc-xxxxxxxxxx          # or: opsrelay similar "checkout 5xx after release"
+opsrelay postmortem inc-xxxxxxxxxx -o postmortem.md   # a draft from the record if it was escalated
+opsrelay policy test scale_service auth-service --replicas 4 --runbook RB-002
+```
+
+## Evaluation and replay
+
+```powershell
+opsrelay eval                                        # every case in opsrelay/eval_cases.yaml, offline agents by default
+opsrelay eval --model global.amazon.nova-2-lite-v1:0 --runs 3 --save
+opsrelay eval --fail-under 0.9                       # a CI gate: exit 1 on low accuracy or any unsafe proposal
+opsrelay replay inc-xxxxxxxxxx --model global.amazon.nova-pro-v1:0
+```
+
+Each eval case raises an alert in a fresh sandbox (its own store and simulated environment; your
+incidents are never touched) and scores triage, diagnosis, action and escalation accuracy, unsafe
+proposals, runbook citations, contract violations and latency. The built-in cases include a vague
+alert, a prompt injection in the alert text and a false alarm. `replay` reruns a past incident the
+same way, deciding as the person did then, and lists what the agents now do differently.
+
+## Integrations: Slack, Teams, PagerDuty, Jira
+
+| When | Slack | Teams | PagerDuty | Jira |
+|---|---|---|---|---|
+| A proposal needs a person | message with **Approve** / **Reject** | card linking to the dashboard | | |
+| SEV1, or escalated | message (escalated) | card (escalated) | incident (dedup key = incident id) | ticket |
+| Resolved | message | card | resolved, if paged | comment with the postmortem, if ticketed |
+
+Configure any of them with the `OPSRELAY_SLACK_*`, `TEAMS_*`, `PAGERDUTY_*` and `JIRA_*` settings
+(tokens may be Secrets Manager ARNs). Notifications go through an outbox: each is created once and
+delivered by a durable job with retries, so a restart neither loses nor repeats one, and a failing
+channel never holds up the incident.
+
+**Approving from Slack:** create a Slack app with a bot token (`chat:write`), turn on
+Interactivity with the request URL `https://<your OpsRelay>/integrations/slack/actions`, and set
+`OPSRELAY_SLACK_SIGNING_SECRET`. Map Slack users to OpsRelay users and roles in
+`OPSRELAY_SLACK_USERS` (or add `slack_id` to entries in the dev users file):
+
+```yaml
+users:
+  - {slack_id: U0123ABCD, name: jane@example.com, roles: [sre, incident_commander]}
+```
+
+Every click is checked against Slack's request signature and authorized by role exactly like the
+dashboard; unmapped users can't decide. The endpoint must be reachable by Slack (EC2 or `opsrelay
+up` behind HTTPS); on AgentCore, messages, pages and tickets work and Teams/Slack link to the
+dashboard.
+
 ## Connecting real systems
 
 `OPSRELAY_ENVIRONMENT=aws` replaces the simulation with real services: a YAML service catalog
@@ -360,13 +450,18 @@ opsrelay/
   intake/        alert parsers (CloudWatch, Alertmanager), dedup/correlation router, SQS consumer
   telemetry.py   OpenTelemetry metrics and traces; ops_metrics.py: MTTA, MTTR, stage times
   audit.py       audit hash-chain verification
+  knowledge.py   embeddings (Amazon Titan v2, or lexical offline); runbooks.py + runbooks/: runbook RAG
+  memory.py      incident memory and similar-incident search; postmortem.py: postmortem export and drafts
+  evals.py       evaluation suite (eval_cases.yaml) and incident replay
+  integrations.py Slack, Teams, PagerDuty and Jira through a notification outbox
   environment.py connector interface + simulated IT environment and scenarios
   offline.py     scripted Strands model provider for offline runs
   remote.py      A2A client with SigV4 for AgentCore runtimes
   service.py     incident operations used by the runtime and CLI
   cli.py         `opsrelay` command
 infra/           AWS CDK app (AgentCore runtimes, DynamoDB, IAM, EventBridge, SQS, Lambdas)
-tests/           lifecycle, contracts, policy, approvals, jobs, auth, connectors, workflow, A2A, runtime, stores, agents, infra
+tests/           lifecycle, contracts, policy, approvals, jobs, auth, connectors, workflow, A2A, runtime, stores,
+                 agents, infra, knowledge, memory, evals, integrations
 docs/            USER_GUIDE.md: the workflow in screenshots; WALKTHROUGH.md: hands-on tour;
                  ARCHITECTURE.md: design decisions and next steps
 deploy/          EC2 user data; an example service catalog
@@ -376,7 +471,7 @@ deploy/          EC2 user data; an example service catalog
 
 ```bash
 pip install -e ".[dev]" aws-cdk-lib constructs
-pytest            # 150 tests, fully offline
+pytest            # 186 tests, fully offline
 ruff check . && ruff format --check .
 ```
 

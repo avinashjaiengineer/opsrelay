@@ -1,6 +1,6 @@
 [project]
 name = "opsrelay"
-version = "0.2.0"
+version = "0.4.0"
 description = "Agent-to-agent IT incident resolution on Strands Agents and Amazon Bedrock AgentCore"
 readme = "README.md"
 license = "MIT"
