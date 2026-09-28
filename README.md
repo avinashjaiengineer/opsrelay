@@ -72,27 +72,37 @@ The demo shows the agents triage, diagnose and propose a rollback, then prompts 
 it. After you approve, the agents verify recovery and print the postmortem. The other scenarios
 are `memory-leak` and `traffic-spike`.
 
-### The full agent-to-agent topology, without Docker
-
-`opsrelay demo` runs every agent in one process. To run them the way AgentCore does, use
-`opsrelay up`: four specialist A2A servers (ports 9001-9004) and the coordinator on port
-8080. The coordinator talks to the specialists over real A2A HTTP calls.
+### The dashboard: watch the agents work in your browser
 
 ```powershell
-# terminal 1
 opsrelay up
-
-# terminal 2 (activate the venv first)
-opsrelay --url http://127.0.0.1:8080 simulate bad-deploy
-opsrelay --url http://127.0.0.1:8080 approvals
-opsrelay --url http://127.0.0.1:8080 approve apr-xxxxxxxxxx --by you
-opsrelay --url http://127.0.0.1:8080 show inc-xxxxxxxxxx
 ```
 
-To avoid repeating `--url`, set the `OPSRELAY_URL` environment variable (PowerShell:
-`$env:OPSRELAY_URL="http://127.0.0.1:8080"`). While it runs, you can open
-http://127.0.0.1:9001/.well-known/agent-card.json in a browser to see an agent's A2A card. If
-port 8080 is taken, use `opsrelay up --port 8090`.
+This starts the four specialist agents as separate A2A servers (ports 9001-9004) and the
+coordinator on port 8080, then opens **http://127.0.0.1:8080/** in your browser. Keep the
+terminal open while you use it.
+
+In the dashboard:
+
+1. Enter your name under **You (approver)**. It is recorded in the audit log.
+2. Click a scenario, such as **Bad deploy**. The incident appears, and the timeline fills in as
+   the coordinator delegates to triage, diagnostics and remediation over A2A.
+3. When a **Human approval** card appears, click **Approve** or **Reject**.
+4. Watch the agents verify the fix, update stakeholders and write the postmortem. Tick
+   **show tool calls** to see every tool call the agents made.
+
+If port 8080 is taken, run `opsrelay up --port 8090` and open http://127.0.0.1:8090/.
+To see an agent's A2A card, open http://127.0.0.1:9001/.well-known/agent-card.json.
+
+You can also drive the running stack from a second terminal (activate the venv first):
+
+```powershell
+$env:OPSRELAY_URL="http://127.0.0.1:8080"
+opsrelay simulate bad-deploy
+opsrelay approvals
+opsrelay approve apr-xxxxxxxxxx --by you
+opsrelay show inc-xxxxxxxxxx
+```
 
 ### Using Claude on Bedrock locally
 
@@ -213,7 +223,7 @@ docs/            ARCHITECTURE.md: design decisions and next steps
 
 ```bash
 pip install -e ".[dev]" aws-cdk-lib constructs
-pytest            # 52 tests, fully offline
+pytest            # 53 tests, fully offline
 ruff check . && ruff format --check .
 ```
 

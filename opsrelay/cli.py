@@ -8,7 +8,7 @@
     opsrelay reject apr-123 --by jane --note "not during peak"
     opsrelay show inc-123                 # incident, approvals and timeline
     opsrelay incidents | health
-    opsrelay up                           # run all five agents locally as A2A/HTTP servers (no Docker)
+    opsrelay up                           # run all five agents locally + a dashboard at http://127.0.0.1:8080
 
 By default commands run the agents inside this process. To send them to a running coordinator:
     --url http://127.0.0.1:8080            # one started with `opsrelay up` (or OPSRELAY_URL)
@@ -114,13 +114,14 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("up", help="run the coordinator and the four specialists locally over A2A (no Docker)")
     p.add_argument("--port", type=int, default=8080, help="coordinator port (default 8080)")
     p.add_argument("--specialist-port", type=int, default=9001, help="first of four specialist ports (default 9001)")
+    p.add_argument("--no-browser", action="store_true", help="don't open the dashboard in a browser")
 
     args = parser.parse_args(argv)
 
     if args.cmd == "up":
         from .local import run_local_stack
 
-        run_local_stack(port=args.port, specialist_base_port=args.specialist_port)
+        run_local_stack(port=args.port, specialist_base_port=args.specialist_port, open_browser=not args.no_browser)
         return 0
 
     def call(payload: dict[str, Any]) -> dict[str, Any]:

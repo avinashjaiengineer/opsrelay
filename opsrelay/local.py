@@ -8,9 +8,14 @@ reaches the specialists over real A2A HTTP calls; all of them share a local SQLi
 import os
 import threading
 import time
+import webbrowser
+from importlib.resources import files
 
 import httpx
 import uvicorn
+from starlette.requests import Request
+from starlette.responses import HTMLResponse
+from starlette.routing import Route
 
 from .config import SPECIALISTS, get_settings
 from .store import get_store
@@ -30,7 +35,20 @@ def _wait_until_up(urls: list[str], timeout: float = 30) -> None:
             time.sleep(0.2)
 
 
-def run_local_stack(host: str = "127.0.0.1", port: int = 8080, specialist_base_port: int = 9001) -> None:
+def add_dashboard(app) -> None:  # noqa: ANN001
+    """Serve the dashboard at GET / (local runs only; the AgentCore runtime serves just the API)."""
+    html = files("opsrelay").joinpath("dashboard.html").read_text(encoding="utf-8")
+
+    async def dashboard(_request: Request) -> HTMLResponse:
+        return HTMLResponse(html)
+
+    if not any(getattr(r, "path", None) == "/" for r in app.router.routes):
+        app.router.routes.insert(0, Route("/", dashboard, methods=["GET"]))
+
+
+def run_local_stack(
+    host: str = "127.0.0.1", port: int = 8080, specialist_base_port: int = 9001, open_browser: bool = True
+) -> None:
     urls = {role: f"http://{host}:{specialist_base_port + i}" for i, role in enumerate(SPECIALISTS)}
 
     # Point the coordinator at the specialists over A2A before anything reads the settings.
@@ -60,5 +78,10 @@ def run_local_stack(host: str = "127.0.0.1", port: int = 8080, specialist_base_p
     for role, url in urls.items():
         print(f"  {role + ':':<16}{url}/.well-known/agent-card.json  (A2A)")
     print(f"  {'coordinator:':<16}http://{host}:{port}/invocations")
-    print(f"\nIn another terminal:  opsrelay --url http://{host}:{port} simulate bad-deploy\n")
+    dashboard_url = f"http://{host}:{port}/"
+    print(f"\n  Dashboard:  {dashboard_url}\n")
+    print(f"Or from another terminal:  opsrelay --url http://{host}:{port} simulate bad-deploy\n")
+    add_dashboard(app)
+    if open_browser:
+        threading.Timer(1.5, webbrowser.open, args=[dashboard_url]).start()
     app.run(port=port, host=host)

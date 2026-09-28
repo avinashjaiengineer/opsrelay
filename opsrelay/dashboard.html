@@ -1,0 +1,244 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpsRelay</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22%3E%3Ccircle cx=%228%22 cy=%228%22 r=%227%22 fill=%22%232f5bd3%22/%3E%3C/svg%3E">
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --ink: #1c2330; --muted: #5d6778; --line: #e3e6eb;
+    --accent: #2f5bd3; --accent-ink: #ffffff;
+    --ok: #1d7a46; --ok-bg: #e4f4ea; --warn: #9a5b00; --warn-bg: #fdf1dc;
+    --bad: #b42318; --bad-bg: #fdeceb; --info: #2f5bd3; --info-bg: #e8eefc;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #11151c; --panel: #181e27; --ink: #e6e9ef; --muted: #98a2b3; --line: #2a3240;
+      --accent: #6d8ff0; --accent-ink: #0d1117;
+      --ok: #6fd39a; --ok-bg: #173325; --warn: #f2b85b; --warn-bg: #3a2c12;
+      --bad: #f28b82; --bad-bg: #3b1a18; --info: #8fa8f5; --info-bg: #1c2744;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { display: flex; align-items: baseline; gap: 12px; padding: 16px 24px;
+           border-bottom: 1px solid var(--line); background: var(--panel); }
+  header h1 { margin: 0; font-size: 18px; }
+  header span { color: var(--muted); }
+  #conn { margin-left: auto; font-size: 12px; }
+  main { display: grid; grid-template-columns: 320px 1fr; gap: 16px; padding: 16px 24px; max-width: 1400px; margin: 0 auto; }
+  @media (max-width: 860px) { main { grid-template-columns: 1fr; padding: 12px 16px; } }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin-bottom: 16px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0 0 10px; }
+  button { font: inherit; border-radius: 7px; border: 1px solid var(--line); background: var(--panel);
+           color: var(--ink); padding: 6px 12px; cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  button.danger { color: var(--bad); }
+  button:disabled { opacity: .5; cursor: default; }
+  input { font: inherit; width: 100%; padding: 6px 10px; border-radius: 7px; border: 1px solid var(--line);
+          background: var(--bg); color: var(--ink); }
+  .scenarios { display: grid; gap: 8px; }
+  .scenarios button { text-align: left; }
+  .scenarios small { display: block; color: var(--muted); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  td { padding: 4px 0; border-bottom: 1px solid var(--line); }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); white-space: nowrap; padding-left: 8px; }
+  .chip { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+  .ok { color: var(--ok); background: var(--ok-bg); } .warn { color: var(--warn); background: var(--warn-bg); }
+  .bad { color: var(--bad); background: var(--bad-bg); } .info { color: var(--info); background: var(--info-bg); }
+  .incident { display: block; width: 100%; text-align: left; margin-bottom: 8px; padding: 8px 10px; }
+  .incident.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .incident .meta { color: var(--muted); font-size: 12px; }
+  .empty { color: var(--muted); }
+  .facts { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; margin: 8px 0 0; }
+  .facts dt { color: var(--muted); } .facts dd { margin: 0; }
+  .approval { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; }
+  .approval.pending { border-color: var(--warn); background: var(--warn-bg); }
+  .approval .actions { display: flex; gap: 8px; margin-top: 8px; }
+  ol.timeline { list-style: none; margin: 0; padding: 0; }
+  ol.timeline li { display: grid; grid-template-columns: 64px 180px minmax(0, 1fr); gap: 12px; padding: 6px 0; border-bottom: 1px solid var(--line); }
+  @media (max-width: 860px) { ol.timeline li { grid-template-columns: 1fr; gap: 0; } }
+  .t { color: var(--muted); font-family: var(--mono); font-size: 12px; }
+  .actor { font-weight: 600; overflow-wrap: anywhere; }
+  ol.timeline li > span { min-width: 0; }
+  .kind { color: var(--muted); font-size: 12px; }
+  .msg { white-space: pre-wrap; overflow-wrap: anywhere; }
+  pre { white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--mono); font-size: 12.5px;
+        background: var(--bg); border-radius: 8px; padding: 12px; margin: 0; }
+  label.toggle { font-size: 12px; color: var(--muted); display: inline-flex; gap: 6px; align-items: center; float: right; }
+  label.toggle input { width: auto; }
+  #error { display: none; margin: 0 24px; padding: 10px 14px; border-radius: 8px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>OpsRelay</h1>
+  <span>Agent-to-agent IT incident resolution</span>
+  <span id="conn" class="chip info">connecting…</span>
+</header>
+<div id="error" class="bad"></div>
+<main>
+  <div>
+    <section>
+      <h2>Trigger a scenario</h2>
+      <div class="scenarios">
+        <button data-scenario="bad-deploy">Bad deploy<small>checkout-api errors after a release</small></button>
+        <button data-scenario="memory-leak">Memory leak<small>auth-service pods OOMKilled</small></button>
+        <button data-scenario="traffic-spike">Traffic spike<small>inventory-service CPU saturated</small></button>
+      </div>
+    </section>
+    <section>
+      <h2>You (approver)</h2>
+      <input id="approver" placeholder="your name or email" autocomplete="name">
+    </section>
+    <section>
+      <h2>Service health</h2>
+      <table id="health"><tr><td class="empty">Loading…</td></tr></table>
+    </section>
+    <section>
+      <h2>Incidents</h2>
+      <div id="incidents" class="empty">None yet. Trigger a scenario above.</div>
+    </section>
+  </div>
+  <div id="detail">
+    <section><p class="empty">Select or trigger an incident to watch the agents work.</p></section>
+  </div>
+</main>
+<script>
+const STATUS = {
+  open: "info", investigating: "info", awaiting_approval: "warn",
+  mitigated: "ok", resolved: "ok", escalated: "bad",
+  pending: "warn", approved: "info", executed: "ok", rejected: "bad", failed: "bad",
+};
+let selected = null;
+let showTools = false;
+let busy = false;
+
+const $ = (id) => document.getElementById(id);
+const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+const chip = (s) => `<span class="chip ${STATUS[s] || "info"}">${esc(String(s).replace("_", " "))}</span>`;
+const time = (iso) => (iso || "").slice(11, 19);
+
+try { $("approver").value = localStorage.getItem("opsrelay.approver") || ""; } catch {}
+$("approver").addEventListener("input", (e) => { try { localStorage.setItem("opsrelay.approver", e.target.value); } catch {} });
+
+async function call(payload) {
+  const resp = await fetch("/invocations", {
+    method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify(payload),
+  });
+  const data = await resp.json();
+  if (data.error) throw new Error(data.error);
+  return data;
+}
+
+function showError(msg) {
+  $("error").textContent = msg || "";
+  $("error").style.display = msg ? "block" : "none";
+}
+
+document.querySelectorAll("[data-scenario]").forEach((btn) => btn.addEventListener("click", async () => {
+  btn.disabled = true;
+  try {
+    const r = await call({action: "simulate", scenario: btn.dataset.scenario, async: true});
+    selected = r.incident.id;
+    showError("");
+    await refresh();
+  } catch (e) { showError(e.message); }
+  btn.disabled = false;
+}));
+
+async function decide(approvalId, approve) {
+  const approver = $("approver").value.trim();
+  if (!approver) { showError("Enter your name under “You (approver)” first; it is recorded in the audit log."); $("approver").focus(); return; }
+  const note = approve ? null : prompt("Reason for rejecting (optional):") || null;
+  try {
+    await call({action: "decide_approval", approval_id: approvalId, approve, approver, note, async: true});
+    showError("");
+    await refresh();
+  } catch (e) { showError(e.message); }
+}
+window.decide = decide;
+window.select = (id) => { selected = id; refresh(); };
+window.toggleTools = (on) => { showTools = on; refresh(); };
+
+function renderHealth(services) {
+  $("health").innerHTML = services.map((s) => `
+    <tr><td>${esc(s.service)} <span class="kind">tier ${s.tier}</span></td>
+        <td class="num">${(s.error_rate * 100).toFixed(1)}% · ${s.p99_latency_ms} ms</td>
+        <td class="num">${s.healthy ? '<span class="chip ok">ok</span>' : '<span class="chip bad">degraded</span>'}</td></tr>`).join("");
+}
+
+function renderIncidents(incidents) {
+  if (!incidents.length) { $("incidents").innerHTML = "None yet. Trigger a scenario above."; return; }
+  if (!selected) selected = incidents[0].id;
+  $("incidents").classList.remove("empty");
+  $("incidents").innerHTML = incidents.map((i) => `
+    <button class="incident ${i.id === selected ? "active" : ""}" onclick="select('${esc(i.id)}')">
+      ${chip(i.status)} ${i.severity ? `<span class="chip info">${esc(i.severity.toUpperCase())}</span>` : ""}
+      <div>${esc(i.title)}</div>
+      <div class="meta">${esc(i.id)} · ${time(i.created_at)}</div>
+    </button>`).join("");
+}
+
+function renderDetail(data) {
+  const i = data.incident;
+  const facts = [
+    ["Service", i.service], ["Severity", i.severity && i.severity.toUpperCase()], ["Triage", i.triage_summary],
+    ["Root cause", i.root_cause], ["Evidence", (i.evidence || []).join("\n")], ["Recommended", i.recommended_action],
+    ["Escalation", i.escalation_reason],
+  ].filter(([, v]) => v);
+  const approvals = data.approvals.map((a) => `
+    <div class="approval ${a.status === "pending" ? "pending" : ""}">
+      ${chip(a.status)} <strong>${esc(a.action)}</strong> on ${esc(a.service)}
+      ${Object.keys(a.params || {}).length ? `<span class="kind">${esc(JSON.stringify(a.params))}</span>` : ""}
+      · risk <strong>${esc(a.risk)}</strong>
+      <div class="msg">${esc(a.rationale)}</div>
+      ${a.decided_by ? `<div class="kind">Decided by ${esc(a.decided_by)}${a.note ? ": " + esc(a.note) : ""}${a.result ? " · " + esc(a.result.detail) : ""}</div>` : ""}
+      ${a.status === "pending" ? `<div class="actions">
+          <button class="primary" onclick="decide('${esc(a.id)}', true)">Approve</button>
+          <button class="danger" onclick="decide('${esc(a.id)}', false)">Reject</button></div>` : ""}
+    </div>`).join("");
+  const events = data.events.filter((e) => showTools || e.kind !== "tool.call");
+  $("detail").innerHTML = `
+    <section>
+      <div>${chip(i.status)} <span class="kind">${esc(i.id)}</span></div>
+      <h2 style="margin-top:8px;color:var(--ink);text-transform:none;letter-spacing:0;font-size:17px">${esc(i.title)}</h2>
+      <div class="msg">${esc(i.description)}</div>
+      ${facts.length ? `<dl class="facts">${facts.map(([k, v]) => `<dt>${k}</dt><dd class="msg">${esc(v)}</dd>`).join("")}</dl>` : ""}
+    </section>
+    ${approvals ? `<section><h2>Human approval</h2>${approvals}</section>` : ""}
+    <section>
+      <h2>Agent timeline <label class="toggle"><input type="checkbox" ${showTools ? "checked" : ""}
+          onchange="toggleTools(this.checked)">show tool calls</label></h2>
+      <ol class="timeline">${events.map((e) => `
+        <li><span class="t">${time(e.created_at)}</span>
+            <span><span class="actor">${esc(e.actor)}</span><br><span class="kind">${esc(e.kind)}</span></span>
+            <span class="msg">${esc(e.kind === "tool.call" ? e.message + " " + JSON.stringify(e.data.input || {}) : e.message)}</span></li>`).join("")}
+      </ol>
+    </section>
+    ${i.postmortem ? `<section><h2>Postmortem</h2><pre>${esc(i.postmortem)}</pre></section>` : ""}`;
+}
+
+async function refresh() {
+  if (busy) return;
+  busy = true;
+  try {
+    const [health, list] = await Promise.all([call({action: "health"}), call({action: "list_incidents"})]);
+    renderHealth(health.services);
+    renderIncidents(list.incidents);
+    if (selected) renderDetail(await call({action: "get_incident", incident_id: selected}));
+    $("conn").textContent = "live"; $("conn").className = "chip ok";
+  } catch (e) {
+    $("conn").textContent = "disconnected"; $("conn").className = "chip bad";
+  } finally { busy = false; }
+}
+
+refresh();
+setInterval(refresh, 1500);
+</script>
+</body>
+</html>

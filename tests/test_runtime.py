@@ -109,3 +109,15 @@ def test_cli_url_mode_talks_to_a_running_coordinator(client, monkeypatch, capsys
     assert "Waiting for human approval" in capsys.readouterr().out
     assert cli.main(["--url", "http://127.0.0.1:8080", "approvals"]) == 0
     assert "rollback_deployment" in capsys.readouterr().out
+
+
+def test_local_dashboard_is_served_and_packaged(client):
+    from opsrelay.local import add_dashboard
+
+    add_dashboard(coordinator.app)
+    add_dashboard(coordinator.app)  # idempotent
+    resp = client.get("/")
+    assert resp.status_code == 200
+    assert "<title>OpsRelay</title>" in resp.text
+    assert '"/invocations"' in resp.text
+    assert [getattr(r, "path", None) for r in coordinator.app.router.routes].count("/") == 1
