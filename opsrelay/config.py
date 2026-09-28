@@ -111,6 +111,10 @@ class Settings(BaseSettings):
     # Integrations (opsrelay.integrations). Each is off until configured; secrets may be Secrets
     # Manager references (see opsrelay.secrets). `public_url` is the dashboard, linked from messages.
     public_url: str = ""
+    # When set (e.g. behind API Gateway or CloudFront, which add it as the x-opsrelay-origin header),
+    # requests without it are refused, so the server is reachable only through that front door.
+    # Requests from the machine itself are exempt. May be a Secrets Manager reference.
+    origin_secret: str = ""
     slack_bot_token: str = ""  # xoxb-...; needs chat:write
     slack_channel: str = ""  # channel id, e.g. C0123456789
     slack_signing_secret: str = ""  # verifies Approve/Reject button clicks

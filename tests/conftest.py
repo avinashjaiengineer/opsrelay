@@ -48,6 +48,7 @@ def _settings(monkeypatch, tmp_path):
         "JIRA_EMAIL",
         "JIRA_PROJECT",
         "DEV_USERS",
+        "ORIGIN_SECRET",
     ):
         monkeypatch.delenv(f"OPSRELAY_{key}", raising=False)
     monkeypatch.setenv("OPSRELAY_MODEL_PROVIDER", "offline")

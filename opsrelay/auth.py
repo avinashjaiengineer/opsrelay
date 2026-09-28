@@ -140,6 +140,25 @@ def clear_caches() -> None:
 PUBLIC = {("GET", "/"), ("GET", "/ping"), ("POST", "/alerts"), ("POST", "/integrations/slack/actions")}
 
 
+ORIGIN_HEADER = b"x-opsrelay-origin"
+LOCAL = {"127.0.0.1", "::1", "localhost"}
+
+
+def _through_front_door(scope) -> bool:  # noqa: ANN001
+    expected = secrets.resolve(get_settings().origin_secret)
+    if not expected:
+        return True
+    if (scope.get("client") or ("",))[0] in LOCAL:
+        return True
+    presented = dict(scope.get("headers") or []).get(ORIGIN_HEADER, b"")
+    return hmac.compare_digest(presented, expected.encode())
+
+
+async def _refuse(send, status: int, message: str) -> None:  # noqa: ANN001
+    await send({"type": "http.response.start", "status": status, "headers": [(b"content-type", b"application/json")]})
+    await send({"type": "http.response.body", "body": json.dumps({"error": message}).encode()})
+
+
 class AuthMiddleware:
     """ASGI middleware for the coordinator: authenticates every API request and makes the principal
     available to the handler (opsrelay.auth.current). The dashboard page itself and /ping are public."""
@@ -148,6 +167,9 @@ class AuthMiddleware:
         self.app = app
 
     async def __call__(self, scope, receive, send):  # noqa: ANN001
+        if scope["type"] == "http" and not _through_front_door(scope):
+            await _refuse(send, 403, "requests must come through the HTTPS endpoint")
+            return
         if scope["type"] != "http" or (scope.get("method"), scope.get("path")) in PUBLIC:
             await self.app(scope, receive, send)
             return
