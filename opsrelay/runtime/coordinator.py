@@ -9,6 +9,11 @@ Payloads are JSON objects with an "action":
     {"action": "list_incidents"}
     {"action": "list_approvals", "status": "pending"}
     {"action": "health"}
+    {"action": "verify_audit", "incident_id": "inc-..."}      # check the audit hash chain
+    {"action": "list_dead_letters"}                           # requests to agents that stayed unavailable
+    {"action": "get_policy"}                                  # the loaded remediation policy
+    {"action": "test_policy", "action_name": "scale_service", "service": "...", "parameters": {"replicas": 4}}
+    {"action": "get_contracts"}                               # lifecycle, agent contracts, transition owners
 
 Add "async": true to open_incident, simulate or decide_approval to return at once and let the
 agents work in the background (the runtime reports HealthyBusy until they finish); poll with
@@ -20,8 +25,10 @@ import threading
 from typing import Any
 
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
+from pydantic import ValidationError
 
 from ..approvals import ApprovalError
+from ..lifecycle import IllegalTransition
 from ..service import IncidentService, decision_prompt, new_incident_prompt
 
 log = logging.getLogger(__name__)
@@ -131,6 +138,25 @@ def handle(payload: dict[str, Any]) -> dict[str, Any]:
         return {"approvals": svc.list_approvals(payload.get("status", "pending"))}
     if action == "health":
         return {"services": svc.health()}
+    if action == "verify_audit":
+        _require(payload, "incident_id")
+        return svc.verify_audit(payload["incident_id"])
+    if action == "list_dead_letters":
+        return {"dead_letters": svc.dead_letters(int(payload.get("limit", 50)))}
+    if action == "get_policy":
+        return {"policy": svc.policy()}
+    if action == "test_policy":
+        _require(payload, "action_name", "service")
+        return {
+            "decision": svc.test_policy(
+                payload["action_name"],
+                payload["service"],
+                payload.get("parameters") or {},
+                float(payload.get("confidence", 0.95)),
+            )
+        }
+    if action == "get_contracts":
+        return svc.contracts()
     raise ValueError(f"unknown action '{action}'")
 
 
@@ -140,7 +166,7 @@ def invoke(payload: dict[str, Any]) -> dict[str, Any]:
         return {"error": "payload must be a JSON object"}
     try:
         return handle(payload)
-    except (ValueError, KeyError, ApprovalError) as e:
+    except (ValueError, KeyError, ApprovalError, IllegalTransition, ValidationError) as e:
         return {"error": str(e).strip("'\"")}
 
 

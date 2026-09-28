@@ -1,6 +1,6 @@
 """`opsrelay up`: the whole AgentCore topology on your machine, without Docker.
 
-Starts the four specialist agents as separate A2A servers (ports 9001-9004 by default) and the
+Starts the five specialist agents as separate A2A servers (ports 9001-9005 by default) and the
 coordinator on port 8080 with the same /invocations contract as AgentCore. The coordinator
 reaches the specialists over real A2A HTTP calls; all of them share a local SQLite file.
 """

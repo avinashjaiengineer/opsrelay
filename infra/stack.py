@@ -2,9 +2,9 @@
 
 Creates:
   * a DynamoDB table shared by every agent (incidents, approvals, audit log, services)
-  * four specialist AgentCore Runtimes speaking the A2A protocol
+  * five specialist AgentCore Runtimes speaking the A2A protocol
   * one coordinator AgentCore Runtime speaking HTTP, allowed to invoke the specialists
-All five run the same container image; OPSRELAY_ROLE selects the agent.
+All six run the same container image; OPSRELAY_ROLE selects the agent.
 """
 
 from pathlib import Path
@@ -17,7 +17,7 @@ from aws_cdk import aws_iam as iam
 from constructs import Construct
 
 ROOT = Path(__file__).resolve().parent.parent
-SPECIALISTS = ("triage", "diagnostics", "remediation", "communications")
+SPECIALISTS = ("triage", "diagnostics", "remediation", "verification", "communications")
 
 
 class OpsRelayStack(Stack):
@@ -27,7 +27,6 @@ class OpsRelayStack(Stack):
         ctx = self.node.try_get_context
         model_provider = ctx("model_provider") or "bedrock"
         model_id = ctx("model_id") or "global.amazon.nova-2-lite-v1:0"
-        auto_approve_risk = ctx("auto_approve_risk") or "none"
         retain_data = str(ctx("retain_data") or "true").lower() == "true"
 
         table = dynamodb.TableV2(
@@ -61,7 +60,6 @@ class OpsRelayStack(Stack):
             "OPSRELAY_AWS_REGION": self.region,
             "OPSRELAY_MODEL_PROVIDER": model_provider,
             "OPSRELAY_BEDROCK_MODEL_ID": model_id,
-            "OPSRELAY_AUTO_APPROVE_RISK": auto_approve_risk,
         }
         model_access = iam.PolicyStatement(
             actions=["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],

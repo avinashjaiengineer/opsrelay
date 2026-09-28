@@ -48,9 +48,43 @@ def test_async_mode_returns_immediately_and_finishes_in_background(client):
     assert opened["status"] == "processing"
     incident_id = opened["incident"]["id"]
     deadline = time.time() + 30
-    while get_store().get_incident(incident_id)["status"] != "awaiting_approval":
+    # Scaling a tier-2 service is allowed by policy, so the agents resolve it on their own.
+    while get_store().get_incident(incident_id)["status"] != "resolved":
         assert time.time() < deadline, "background coordinator did not finish"
         time.sleep(0.1)
+
+
+def test_governance_actions(client):
+    opened = _invoke(client, {"action": "simulate", "scenario": "bad-deploy"})
+    audit = _invoke(client, {"action": "verify_audit", "incident_id": opened["incident"]["id"]})
+    assert audit["ok"] and audit["events"] > 10
+
+    denied = _invoke(client, {"action": "test_policy", "action_name": "delete_database", "service": "payments-db"})[
+        "decision"
+    ]
+    assert (denied["decision"], denied["allowed"]) == ("DENY", False)
+    allowed = _invoke(
+        client,
+        {
+            "action": "test_policy",
+            "action_name": "scale_service",
+            "service": "inventory-service",
+            "parameters": {"replicas": 4},
+        },
+    )["decision"]
+    assert allowed["decision"] == "ALLOW"
+
+    contracts = _invoke(client, {"action": "get_contracts"})
+    assert contracts["lifecycle"]["open"] == ["triaging"]
+    assert {a["role"] for a in contracts["agents"]} == {
+        "triage",
+        "diagnostics",
+        "remediation",
+        "verification",
+        "communications",
+    }
+    assert _invoke(client, {"action": "list_dead_letters"})["dead_letters"] == []
+    assert _invoke(client, {"action": "get_policy"})["policy"]["actions"]["delete_database"]["allowed"] is False
 
 
 @pytest.mark.parametrize(

@@ -12,29 +12,26 @@ from typing import Any
 
 from .store import Record, Store, now_iso
 
+# What the environment can do. Whether an action may run, and how risky it is, is decided by
+# the policy engine (opsrelay/policies.yaml), not here.
 ACTIONS: dict[str, dict[str, Any]] = {
     "rollback_deployment": {
-        "risk": "medium",
         "description": "Roll the service back to its previous version.",
-        "params": {},
+        "params": {"target_version": "str (optional)"},
     },
     "restart_service": {
-        "risk": "medium",
         "description": "Rolling restart of every replica of the service.",
         "params": {},
     },
     "scale_service": {
-        "risk": "low",
         "description": 'Set the replica count. Params: {"replicas": <int>}.',
         "params": {"replicas": "int"},
     },
     "flush_cache": {
-        "risk": "low",
         "description": "Flush the service's cache.",
         "params": {},
     },
 }
-RISK_ORDER = ["low", "medium", "high"]
 
 RUNBOOKS: dict[str, str] = {
     "bad-deploy": (
@@ -176,15 +173,10 @@ class Environment(ABC):
 
     @abstractmethod
     def execute(self, action: str, service: str, params: Record) -> Record:
-        """Carry out an approved action. Returns {"ok": bool, "detail": str}."""
+        """Carry out an approved action. Returns {"ok": bool, "detail": str}.
 
-    def action_risk(self, action: str, service: str) -> str:
-        """Base risk of the action, one level higher on tier-1 services."""
-        base = ACTIONS[action]["risk"]
-        info = self.service_info(service)
-        if info.get("tier") == 1:
-            return RISK_ORDER[min(RISK_ORDER.index(base) + 1, len(RISK_ORDER) - 1)]
-        return base
+        Only opsrelay.executor calls this, after the policy engine and approval engine agree.
+        """
 
 
 class SimulatedEnvironment(Environment):
@@ -327,6 +319,8 @@ class SimulatedEnvironment(Environment):
             prev = svc.get("previous_version")
             if not prev:
                 return {"ok": False, "detail": f"{service} has no previous version to roll back to"}
+            if params.get("target_version") not in (None, prev):
+                return {"ok": False, "detail": f"{service} can only roll back to {prev}"}
             svc["version"], svc["previous_version"] = prev, None
             svc["deployments"].append({"version": prev, "at": now_iso(), "by": "opsrelay-rollback"})
             if kind == "bad_deploy":

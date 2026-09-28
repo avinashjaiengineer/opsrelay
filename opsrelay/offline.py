@@ -128,6 +128,12 @@ class ScriptedModel(Model):
 # --- Playbooks -------------------------------------------------------------------------------
 
 
+def _submitted(s: Script, name: str) -> bool:
+    """True if `name` was called and did not return an error."""
+    result = s.result(name)
+    return s.called(name) and not (isinstance(result, dict) and "error" in result)
+
+
 def triage_policy(s: Script) -> Call | str:
     iid = s.incident_id
     if not iid:
@@ -138,9 +144,11 @@ def triage_policy(s: Script) -> Call | str:
     health = s.result("get_health_overview")
     if health is None:
         return Call("get_health_overview", {})
-    if s.called("update_triage"):
-        _name, done, _result = next(h for h in reversed(s.history) if h[0] == "update_triage")
-        return f"Triage complete for {iid}: {done['severity']} on {done['service']}. {done['summary']}"
+    if _submitted(s, "submit_triage"):
+        _name, done, _result = next(h for h in reversed(s.history) if h[0] == "submit_triage")
+        return f"Triage complete for {iid}: {done['severity']} on {done['service']}. {done['customer_impact']}"
+    if s.called("report_inconclusive_triage"):
+        return f"Triage inconclusive for {iid}: every service reports healthy."
 
     by_name = {h["service"]: h for h in health}
     text = f"{incident.get('title', '')} {incident.get('description', '')}".lower()
@@ -149,11 +157,25 @@ def triage_policy(s: Script) -> Call | str:
         unhealthy = sorted((h for h in health if not h["healthy"]), key=lambda h: h["tier"])
         service = unhealthy[0]["service"] if unhealthy else None
     if service is None:
-        return f"Could not identify an affected service for {iid}; every service reports healthy."
+        return Call(
+            "report_inconclusive_triage",
+            {"incident_id": iid, "reason": "Every service reports healthy; no affected service can be identified."},
+        )
     h = by_name[service]
-    severity = "sev1" if h["tier"] == 1 and h["error_rate"] >= 0.1 else "sev2" if h["tier"] == 1 else "sev3"
-    summary = f"{service} degraded: error rate {h['error_rate']:.1%}, p99 {h['p99_latency_ms']} ms."
-    return Call("update_triage", {"incident_id": iid, "service": service, "severity": severity, "summary": summary})
+    severity = "SEV1" if h["tier"] == 1 and h["error_rate"] >= 0.1 else "SEV2" if h["tier"] == 1 else "SEV3"
+    return Call(
+        "submit_triage",
+        {
+            "incident_id": iid,
+            "severity": severity,
+            "service": service,
+            "customer_impact": (
+                f"{service} is degraded: error rate {h['error_rate']:.1%}, p99 {h['p99_latency_ms']} ms."
+            ),
+            "rationale": f"{service} is tier {h['tier']} and the only unhealthy service named by the alert.",
+            "confidence": 0.95,
+        },
+    )
 
 
 def _recent(ts: str, hours: float = 2) -> bool:
@@ -180,44 +202,55 @@ def diagnostics_policy(s: Script) -> Call | str:
     deploys = s.result("get_recent_deployments")
     if deploys is None:
         return Call("get_recent_deployments", {"service": service})
-    if s.called("record_diagnosis"):
+    if _submitted(s, "submit_diagnosis"):
         return f"Diagnosis recorded for {iid}."
 
     latest = deploys["deployments"][-1] if deploys.get("deployments") else None
     evidence = [
-        f"error_rate={metrics['error_rate']}",
-        f"p99_latency_ms={metrics['p99_latency_ms']}",
-        f"cpu_pct={metrics['cpu_pct']}",
-        f"memory_pct={metrics['memory_pct']}",
+        {"source": "metrics", "value": f"error_rate={metrics['error_rate']}, p99={metrics['p99_latency_ms']} ms"},
+        {"source": "metrics", "value": f"cpu={metrics['cpu_pct']}%, memory={metrics['memory_pct']}%"},
     ]
     if metrics["error_rate"] >= 0.1 and latest and _recent(latest["at"]):
-        category = "bad-deploy"
+        category, confidence = "bad-deploy", 0.95
         root = f"Release {latest['version']} of {service}, deployed at {latest['at']}, introduced an exception."
+        component = f"{service} {latest['version']}"
         action = "Roll back to the previous version."
-        evidence.append(f"deployed {latest['version']} at {latest['at']}")
+        evidence.append({"source": "deployment", "value": f"{latest['version']} deployed at {latest['at']}"})
     elif metrics["memory_pct"] >= 90:
-        category = "memory-leak"
+        category, confidence = "memory-leak", 0.92
         root = f"{service} is exhausting memory and pods are being OOMKilled."
+        component = f"{service} memory"
         action = "Rolling restart to reclaim memory; investigate the leak."
     elif metrics["cpu_pct"] >= 85:
-        category = "saturation"
+        category, confidence = "saturation", 0.93
         root = f"{service} is CPU-saturated by traffic at {metrics['requests_per_min']} req/min."
+        component = f"{service} capacity"
         action = "Scale out replicas."
     else:
-        category = "unknown"
+        category, confidence = "unknown", 0.3
         root = f"No clear cause found for {service}."
+        component = service
         action = "Escalate to the owning team."
-    evidence.extend(logs[:2] if isinstance(logs, list) else [])
+    evidence.extend({"source": "logs", "value": line} for line in (logs[:2] if isinstance(logs, list) else []))
     return Call(
-        "record_diagnosis",
+        "submit_diagnosis",
         {
             "incident_id": iid,
             "root_cause": root,
             "category": category,
             "evidence": evidence,
+            "confidence": confidence,
+            "affected_component": component,
             "recommended_action": action,
         },
     )
+
+
+RUNBOOK_ACTIONS = {
+    "bad-deploy": ("rollback_deployment", "high", "Redeploy the release that was rolled back."),
+    "memory-leak": ("restart_service", "medium", "None needed: a restart does not change the deployed version."),
+    "saturation": ("scale_service", "low", "Scale back to the previous replica count."),
+}
 
 
 def remediation_policy(s: Script) -> Call | str:
@@ -226,55 +259,82 @@ def remediation_policy(s: Script) -> Call | str:
     if incident is None:
         return Call("get_incident", {"incident_id": iid})
     service = incident.get("service")
-    if not service:
-        return f"{iid} has no affected service; nothing to remediate."
-
-    if "verify" in s.prompt.lower():
-        metrics = s.result("get_metrics")
-        if metrics is None:
-            return Call("get_metrics", {"service": service})
-        if not metrics["healthy"]:
-            return f"{service} is still unhealthy after the action: {metrics}."
-        if not s.called("mark_mitigated"):
+    if incident["status"] != "investigating":
+        return f"{iid} is {incident['status']}; nothing to propose."
+    if s.called("decline_remediation"):
+        return f"Declined to remediate {iid}."
+    proposed = s.result("submit_proposal")
+    if proposed is not None:
+        if "error" in proposed:
             return Call(
-                "mark_mitigated",
-                {
-                    "incident_id": iid,
-                    "verification": f"error_rate={metrics['error_rate']}, p99={metrics['p99_latency_ms']} ms",
-                },
+                "decline_remediation",
+                {"incident_id": iid, "reason": f"{proposed['error']}: {'; '.join(proposed.get('reasons', []))}"},
             )
-        return f"Verified: {service} is healthy. Incident {iid} marked mitigated."
+        return (
+            f"Proposed remediation for {iid}: {proposed['decision']} ({proposed['risk']} risk), {proposed['status']}."
+        )
 
-    open_ = [a for a in incident.get("approvals", []) if a["status"] in ("pending", "approved")]
-    if open_:
-        return f"Action {open_[0]['action']} already proposed ({open_[0]['id']}, {open_[0]['status']})."
     category = incident.get("category", "unknown")
     if not s.called("get_runbook"):
         return Call("get_runbook", {"topic": category})
-    proposed = s.result("propose_action")
-    if proposed is not None:
-        return f"Proposed remediation for {iid}: {proposed}."
-    if category == "bad-deploy":
-        action, extra = "rollback_deployment", {}
-    elif category == "memory-leak":
-        action, extra = "restart_service", {}
-    elif category == "saturation":
+    if category not in RUNBOOK_ACTIONS:
+        return Call(
+            "decline_remediation",
+            {"incident_id": iid, "reason": f"No runbook action fits category '{category}'."},
+        )
+    action, risk, rollback_plan = RUNBOOK_ACTIONS[category]
+    extra: dict[str, Any] = {}
+    if action == "scale_service":
         info = s.result("get_service_info")
         if info is None:
             return Call("get_service_info", {"service": service})
-        action, extra = "scale_service", {"replicas": min(info["max_replicas"], info["replicas"] * 2)}
-    else:
-        return f"No safe automated remediation for category '{category}'; recommend escalation."
+        extra["replicas"] = min(info["max_replicas"], info["replicas"] * 2)
     return Call(
-        "propose_action",
+        "submit_proposal",
         {
             "incident_id": iid,
             "action": action,
             "service": service,
+            "risk": risk,
+            "rollback_plan": rollback_plan,
             "rationale": f"Runbook '{category}': {incident.get('recommended_action', '')}",
             **extra,
         },
     )
+
+
+def verification_policy(s: Script) -> Call | str:
+    iid = s.incident_id
+    incident = s.result("get_incident")
+    if incident is None:
+        return Call("get_incident", {"incident_id": iid})
+    service = incident.get("service")
+    metrics = s.result("get_metrics")
+    if metrics is None:
+        return Call("get_metrics", {"service": service})
+    if _submitted(s, "submit_verification"):
+        return f"Verified {service}: {'recovered' if metrics['healthy'] else 'not recovered'}."
+    return Call(
+        "submit_verification",
+        {
+            "incident_id": iid,
+            "service": service,
+            "recovered": metrics["healthy"],
+            "observations": [
+                {"source": "metrics", "value": f"error_rate={metrics['error_rate']}"},
+                {"source": "metrics", "value": f"p99_latency_ms={metrics['p99_latency_ms']}"},
+            ],
+            "summary": f"{service} error rate {metrics['error_rate']}, p99 {metrics['p99_latency_ms']} ms: "
+            + ("healthy." if metrics["healthy"] else "still unhealthy."),
+        },
+    )
+
+
+FOLLOW_UPS = {
+    "bad-deploy": ["Add a canary stage that checks the 5xx rate before full rollout", "Add a regression test"],
+    "memory-leak": ["Find and fix the leak in the session cache", "Alert on memory above 85% for 10 minutes"],
+    "saturation": ["Autoscale on CPU and request rate", "Load-test for campaign traffic"],
+}
 
 
 def communications_policy(s: Script) -> Call | str:
@@ -284,8 +344,9 @@ def communications_policy(s: Script) -> Call | str:
         return Call("get_incident", {"incident_id": iid})
     status = incident["status"]
     posted = [inp["audience"] for name, inp, _r in s.history if name == "post_status_update"]
+    verified = status == "verifying" and (incident.get("verification") or {}).get("recovered")
 
-    if status == "mitigated":
+    if verified:
         timeline = s.result("get_incident_timeline")
         if timeline is None:
             return Call("get_incident_timeline", {"incident_id": iid})
@@ -295,7 +356,7 @@ def communications_policy(s: Script) -> Call | str:
                 {
                     "incident_id": iid,
                     "audience": "internal",
-                    "message": f"[{iid}] Mitigated. Cause: {incident.get('root_cause')} "
+                    "message": f"[{iid}] Recovered. Cause: {incident.get('root_cause')} "
                     f"Fix: {incident.get('recommended_action')}",
                 },
             )
@@ -309,22 +370,28 @@ def communications_policy(s: Script) -> Call | str:
                     "We're sorry for the disruption.",
                 },
             )
-        if not s.called("resolve_incident"):
-            lines = "\n".join(f"- {e['created_at']} {e['actor']}: {e['message']}" for e in timeline)
-            postmortem = (
-                f"# Postmortem: {incident['title']}\n\n"
-                f"## Summary\n{incident.get('triage_summary', '')}\n\n"
-                f"## Impact\nSeverity {incident.get('severity')}, service {incident.get('service')}.\n\n"
-                f"## Root cause\n{incident.get('root_cause')}\n\n"
-                f"## Resolution\n{incident.get('verification', '')}\n\n"
-                f"## Timeline\n{lines}\n\n"
-                "## Follow-ups\n- Add a regression test or alert that would have caught this earlier.\n"
+        if not _submitted(s, "submit_postmortem"):
+            executed = next((a for a in incident["approvals"] if a["status"] == "executed"), {})
+            return Call(
+                "submit_postmortem",
+                {
+                    "incident_id": iid,
+                    "summary": incident.get("customer_impact") or incident["title"],
+                    "impact": f"{incident.get('severity')} on {incident.get('service')}: {incident.get('title')}.",
+                    "timeline": [f"{e['created_at'][11:19]} {e['actor']}: {e['message'][:200]}" for e in timeline][:15],
+                    "root_cause": incident.get("root_cause") or "Unknown",
+                    "resolution": f"{(executed.get('result') or {}).get('detail', 'Remediation ran')}. "
+                    f"Verified: {incident['verification']['summary']}",
+                    "detection": f"Detected by the {incident.get('source', 'monitoring')} alert: {incident['title']}.",
+                    "action_items": FOLLOW_UPS.get(
+                        incident.get("category", ""), ["Review monitoring for this failure"]
+                    ),
+                },
             )
-            return Call("resolve_incident", {"incident_id": iid, "postmortem": postmortem})
         return f"Stakeholders updated and incident {iid} resolved with a postmortem."
 
     if "internal" not in posted:
-        detail = incident.get("escalation_reason") or incident.get("triage_summary") or incident["title"]
+        detail = incident.get("escalation_reason") or incident.get("customer_impact") or incident["title"]
         return Call(
             "post_status_update",
             {"incident_id": iid, "audience": "internal", "message": f"[{iid}] Status: {status}. {detail}"},
@@ -332,73 +399,84 @@ def communications_policy(s: Script) -> Call | str:
     return f"Internal update posted for {iid} (status {status})."
 
 
-def _asked(s: Script, role: str, word: str = "") -> bool:
-    return any(name == f"ask_{role}" and word.lower() in inp.get("request", "").lower() for name, inp, _r in s.history)
+def _asked(s: Script, role: str) -> bool:
+    return any(name == f"ask_{role}" for name, _inp, _r in s.history)
 
 
 def _fresh_incident(s: Script) -> bool:
-    """True if get_incident was called after the most recent delegation."""
+    """True if get_incident was called after the most recent state-changing call."""
     last_get = max((i for i, h in enumerate(s.history) if h[0] == "get_incident"), default=-1)
-    last_ask = max((i for i, h in enumerate(s.history) if h[0].startswith("ask_")), default=-1)
-    return last_get > last_ask
+    last_change = max(
+        (i for i, h in enumerate(s.history) if h[0].startswith("ask_") or h[0] == "escalate_incident"), default=-1
+    )
+    return last_get > last_change
+
+
+def _escalate(iid: str, reason: str) -> Call:
+    return Call("escalate_incident", {"incident_id": iid, "reason": reason})
 
 
 def coordinator_policy(s: Script) -> Call | str:
+    """Drives the incident by its status, as the coordinator prompt describes."""
     iid = s.incident_id
-    if "was decided" not in s.prompt:
-        for role, request in (
-            ("triage", "Triage this incident: identify the affected service and severity."),
-            ("diagnostics", "Find the root cause, with evidence."),
-            ("remediation", "Propose a remediation per the runbook."),
-        ):
-            if not _asked(s, role):
-                return Call(f"ask_{role}", {"incident_id": iid, "request": request})
-
-    if s.called("escalate_incident"):
-        reason = next(inp["reason"] for name, inp, _r in reversed(s.history) if name == "escalate_incident")
-        if not _asked(s, "communications"):
-            return Call(
-                "ask_communications",
-                {"incident_id": iid, "request": "Post an internal update: the incident was escalated."},
-            )
-        return f"{iid} escalated to the owning team: {reason}"
-
     if not _fresh_incident(s):
         return Call("get_incident", {"incident_id": iid})
     incident = s.result("get_incident")
     status = incident["status"]
-    pending = [a for a in incident["approvals"] if a["status"] == "pending"]
-    if pending:
-        a = pending[0]
-        return (
-            f"{iid}: {(incident.get('severity') or '').upper()} on {incident.get('service')}. "
-            f"Root cause: {incident.get('root_cause')} Waiting for human approval of {a['action']} "
-            f"({a['id']}, risk {a['risk']})."
-        )
-    if status == "resolved":
-        return f"{iid} mitigated and resolved. {s.result('ask_communications')}"
-    if status == "mitigated":
-        return Call(
-            "ask_communications",
-            {"incident_id": iid, "request": "Update stakeholders, write the postmortem, and resolve."},
-        )
+    diagnosis = incident.get("diagnosis") or {}
 
-    decided = [a for a in incident["approvals"] if a["status"] in ("executed", "rejected", "failed")]
-    last = decided[-1] if decided else None
-    if last is None:
-        reason = "No safe automated remediation found."
-    elif last["status"] == "executed":
-        if not _asked(s, "remediation", "verify"):
-            return Call(
-                "ask_remediation",
-                {"incident_id": iid, "request": f"{last['action']} ran. Verify recovery of {last['service']}."},
+    if status == "open":
+        return Call("ask_triage", {"incident_id": iid, "request": "Identify the affected service and severity."})
+    if status == "triaging":
+        if _asked(s, "triage"):
+            return _escalate(iid, "Triage was inconclusive: no affected service could be identified.")
+        return Call("ask_triage", {"incident_id": iid, "request": "Identify the affected service and severity."})
+    if status == "investigating":
+        if not diagnosis:
+            if _asked(s, "diagnostics"):
+                return _escalate(iid, "Diagnostics did not produce a diagnosis.")
+            return Call("ask_diagnostics", {"incident_id": iid, "request": "Find the root cause, with evidence."})
+        if diagnosis["confidence"] < 0.7:
+            return _escalate(
+                iid,
+                f"Diagnosis confidence {diagnosis['confidence']:.2f} is too low to act on: {diagnosis['root_cause']}",
             )
-        reason = f"{last['action']} ran but {incident.get('service')} did not recover."
-    else:
-        reason = f"Remediation {last['action']} was {last['status']}" + (
-            f" ({last['note']})" if last.get("note") else ""
+        if not _asked(s, "remediation"):
+            return Call("ask_remediation", {"incident_id": iid, "request": "Propose a remediation per the runbook."})
+        return _escalate(iid, "No safe remediation: remediation declined or every proposal was denied by policy.")
+    if status == "awaiting_approval":
+        [pending] = [a for a in incident["approvals"] if a["status"] == "pending"] or [{}]
+        return (
+            f"{iid}: {incident.get('severity')} on {incident.get('service')}. Root cause: "
+            f"{incident.get('root_cause')} Waiting for human approval of {pending.get('action')} "
+            f"({pending.get('id')}, risk {pending.get('risk')})."
         )
-    return Call("escalate_incident", {"incident_id": iid, "reason": reason})
+    if status == "remediating":
+        return f"{iid}: the approved action is running."
+    if status == "verifying":
+        verification = incident.get("verification") or {}
+        if not verification:
+            if _asked(s, "verification"):
+                return f"{iid}: verification did not complete."
+            return Call("ask_verification", {"incident_id": iid, "request": "The action ran. Verify recovery."})
+        if not _asked(s, "communications"):
+            return Call(
+                "ask_communications",
+                {"incident_id": iid, "request": "Recovery is verified. Update stakeholders and write the postmortem."},
+            )
+        return f"{iid}: verified but not resolved."
+    if status == "failed":
+        return _escalate(iid, incident.get("failure_reason") or "Remediation failed.")
+    if status == "escalated":
+        if not _asked(s, "communications"):
+            return Call(
+                "ask_communications",
+                {"incident_id": iid, "request": "The incident was escalated. Post an internal update."},
+            )
+        return f"{iid} escalated to the owning team: {incident.get('escalation_reason')}"
+    if status == "resolved":
+        return f"{iid} resolved. Postmortem written."
+    return f"{iid} is {status}."
 
 
 POLICIES: dict[str, Policy] = {
@@ -406,5 +484,6 @@ POLICIES: dict[str, Policy] = {
     "triage": triage_policy,
     "diagnostics": diagnostics_policy,
     "remediation": remediation_policy,
+    "verification": verification_policy,
     "communications": communications_policy,
 }

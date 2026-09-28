@@ -3,7 +3,6 @@
   "context": {
     "model_provider": "bedrock",
     "model_id": "global.amazon.nova-2-lite-v1:0",
-    "auto_approve_risk": "none",
     "retain_data": "true"
   }
 }

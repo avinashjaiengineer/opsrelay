@@ -8,7 +8,12 @@
     opsrelay reject apr-123 --by jane --note "not during peak"
     opsrelay show inc-123                 # incident, approvals and timeline
     opsrelay incidents | health
-    opsrelay up                           # run all five agents locally + a dashboard at http://127.0.0.1:8080
+    opsrelay audit inc-123                # verify the incident's tamper-evident audit chain
+    opsrelay dlq                          # requests to agents that stayed unavailable
+    opsrelay policy list                  # the remediation policy in force
+    opsrelay policy test scale_service inventory-service --replicas 4
+    opsrelay contracts                    # lifecycle states, agent contracts, who may make each move
+    opsrelay up                           # run all six agents locally + a dashboard at http://127.0.0.1:8080
 
 By default commands run the agents inside this process. To send them to a running coordinator:
     --url http://127.0.0.1:8080            # one started with `opsrelay up` (or OPSRELAY_URL)
@@ -61,12 +66,14 @@ def _print_incident(data: dict[str, Any]) -> None:
     if inc.get("root_cause"):
         print(f"  Root cause: {inc['root_cause']}")
     for a in data.get("approvals", []):
+        decision = (a.get("policy") or {}).get("decision", "")
         print(
-            f"  approval {a['id']}: {a['action']} {a['service']} {a['params'] or ''} risk={a['risk']} -> {a['status']}"
+            f"  approval {a['id']}: {a['action']} {a['service']} {a['params'] or ''} risk={a['risk']} "
+            f"policy={decision} -> {a['status']}"
         )
     for e in data.get("events", []):
-        if e["kind"] != "tool.call":
-            print(f"  {e['created_at'][11:19]} {e['actor']:<22} {e['kind']:<22} {e['message'][:110]!s}".rstrip())
+        if e["kind"] not in ("tool.invoked", "tool.completed"):
+            print(f"  {e['created_at'][11:19]} {e['actor']:<22} {e['kind']:<24} {e['message'][:110]!s}".rstrip())
     if inc.get("postmortem"):
         print("\n" + inc["postmortem"])
 
@@ -111,14 +118,27 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("incident_id")
     sub.add_parser("incidents", help="list incidents")
     sub.add_parser("health", help="service health")
-    p = sub.add_parser("up", help="run the coordinator and the four specialists locally over A2A (no Docker)")
+    p = sub.add_parser("audit", help="verify an incident's audit hash chain")
+    p.add_argument("incident_id")
+    sub.add_parser("dlq", help="list dead letters (requests to agents that stayed unavailable)")
+    p = sub.add_parser("policy", help="show or test the remediation policy")
+    policy_sub = p.add_subparsers(dest="policy_cmd", required=True)
+    policy_sub.add_parser("list", help="show the policy in force")
+    p = policy_sub.add_parser("test", help="the decision for a proposal, without recording anything")
+    p.add_argument("action_name", metavar="ACTION")
+    p.add_argument("service")
+    p.add_argument("--replicas", type=int)
+    p.add_argument("--target-version")
+    p.add_argument("--confidence", type=float, default=0.95, help="diagnosis confidence (default 0.95)")
+    sub.add_parser("contracts", help="lifecycle states, agent contracts and who may make each move")
+    p = sub.add_parser("up", help="run the coordinator and the five specialists locally over A2A (no Docker)")
     p.add_argument("--port", type=int, default=8080, help="coordinator port (default 8080)")
     p.add_argument(
         "--host",
         default="127.0.0.1",
         help="where the coordinator and dashboard listen (default 127.0.0.1; 0.0.0.0 for a server)",
     )
-    p.add_argument("--specialist-port", type=int, default=9001, help="first of four specialist ports (default 9001)")
+    p.add_argument("--specialist-port", type=int, default=9001, help="first of five specialist ports (default 9001)")
     p.add_argument("--no-browser", action="store_true", help="don't open the dashboard in a browser")
 
     args = parser.parse_args(argv)
@@ -173,12 +193,53 @@ def main(argv: list[str] | None = None) -> int:
         payload = {"action": "get_incident", "incident_id": args.incident_id}
     elif args.cmd == "incidents":
         payload = {"action": "list_incidents"}
+    elif args.cmd == "audit":
+        payload = {"action": "verify_audit", "incident_id": args.incident_id}
+    elif args.cmd == "dlq":
+        payload = {"action": "list_dead_letters"}
+    elif args.cmd == "policy" and args.policy_cmd == "list":
+        payload = {"action": "get_policy"}
+    elif args.cmd == "policy":
+        parameters: dict[str, Any] = {}
+        if args.replicas is not None:
+            parameters["replicas"] = args.replicas
+        if args.target_version:
+            parameters["target_version"] = args.target_version
+        payload = {
+            "action": "test_policy",
+            "action_name": args.action_name,
+            "service": args.service,
+            "parameters": parameters,
+            "confidence": args.confidence,
+        }
+    elif args.cmd == "contracts":
+        payload = {"action": "get_contracts"}
     else:
         payload = {"action": "health"}
 
     result = call(payload)
-    if args.json:
+    if args.json or args.cmd in ("contracts",) or (args.cmd == "policy" and args.policy_cmd == "list"):
         print(json.dumps(result, indent=2, default=str))
+    elif args.cmd == "audit":
+        if result["ok"]:
+            print(
+                f"{result['incident_id']}: audit chain intact ({result['events']} events, head {result['head'][:16]})"
+            )
+        else:
+            print(
+                f"{result['incident_id']}: TAMPERED at event #{result['at']} ({result['event_id']}): {result['reason']}"
+            )
+            return 2
+    elif args.cmd == "dlq":
+        if not result["dead_letters"]:
+            print("No dead letters.")
+        for d in result["dead_letters"]:
+            print(f"{d['id']}  {d['incident_id']}  {d['agent']}  {d['created_at']}  {d['error']}")
+    elif args.cmd == "policy":
+        d = result["decision"]
+        print(f"{d['decision']}  risk={d['risk']}  requires_human={d['requires_human']}  ({d['policy_version']})")
+        for reason in d["reasons"]:
+            print(f"  - {reason}")
     elif args.cmd == "approvals":
         _print_approvals(result["approvals"])
     elif args.cmd == "incidents":
@@ -214,6 +275,8 @@ def _demo(call, scenario: str, yes: bool) -> int:  # noqa: ANN001
     a = pending[0]
     print(f"== Human approval needed: {a['action']} on {a['service']} {a['params'] or ''} (risk {a['risk']})")
     print(f"   Rationale: {a['rationale']}")
+    for reason in (a.get("policy") or {}).get("reasons", []):
+        print(f"   Policy: {reason}")
     approve = yes or input("   Approve? [y/N] ").strip().lower() in ("y", "yes")
     decided = call(
         {

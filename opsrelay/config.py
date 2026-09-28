@@ -5,8 +5,8 @@ from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-Role = Literal["coordinator", "triage", "diagnostics", "remediation", "communications"]
-SPECIALISTS: tuple[Role, ...] = ("triage", "diagnostics", "remediation", "communications")
+Role = Literal["coordinator", "triage", "diagnostics", "remediation", "verification", "communications"]
+SPECIALISTS: tuple[Role, ...] = ("triage", "diagnostics", "remediation", "verification", "communications")
 
 
 class Settings(BaseSettings):
@@ -41,11 +41,22 @@ class Settings(BaseSettings):
     triage_endpoint: str = ""
     diagnostics_endpoint: str = ""
     remediation_endpoint: str = ""
+    verification_endpoint: str = ""
     communications_endpoint: str = ""
     a2a_timeout_seconds: int = 600
 
-    # Actions at or below this risk level run without a human. "none" gates every action.
-    auto_approve_risk: Literal["none", "low", "medium"] = "none"
+    # Delegation resilience: each call to a specialist gets `agent_timeout_seconds`, failed calls
+    # are retried with exponential backoff, and after `breaker_failure_threshold` consecutive
+    # failures the agent's circuit opens for `breaker_recovery_seconds`. When every attempt
+    # fails, the request goes to the dead-letter queue and the incident to a human.
+    agent_timeout_seconds: float = 300
+    agent_max_attempts: int = 3
+    retry_backoff_seconds: float = 1.0
+    breaker_failure_threshold: int = 5
+    breaker_recovery_seconds: float = 30
+
+    # Remediation policy (see opsrelay/policies.yaml). Empty: the built-in policy.
+    policy_file: str = ""
 
     def endpoint_for(self, role: Role) -> str:
         return getattr(self, f"{role}_endpoint")

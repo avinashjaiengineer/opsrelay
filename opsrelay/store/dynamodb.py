@@ -2,11 +2,18 @@
 
 Items (each keeps the record as a JSON string in `doc`, so no float/Decimal conversion):
 
-    pk              sk                      gsi1pk      gsi1sk
-    INC#<id>        META                    INCIDENT    <created_at>
-    INC#<id>        EVT#<created_at>#<seq>#<id>  -      -
-    APR#<id>        META                    APPROVAL    <created_at>
-    SVC#<name>      META                    SERVICE     <name>
+    pk              sk                           gsi1pk      gsi1sk          other
+    INC#<id>        META                         INCIDENT    <created_at>    status
+    INC#<id>        EVT#<created_at>#<seq>#<id>  -           -
+    INC#<id>        CHAIN                        -           -               head (hash of the last event)
+    APR#<id>        META                         APPROVAL    <created_at>    status
+    EXE#<key>       META                         -           -
+    DLQ#<id>        META                         DEADLETTER  <created_at>
+    SVC#<name>      META                         SERVICE     <name>
+
+Status changes are conditional writes on the `status` attribute. Each audit event is written in
+one transaction with its incident's CHAIN item, conditioned on the previous head, so concurrent
+writers can't fork the hash chain.
 """
 
 import itertools
@@ -17,7 +24,7 @@ import boto3
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 
-from .base import Record, Store
+from .base import GENESIS_HASH, Record, Store, seal
 
 GSI = "gsi1"
 
@@ -37,10 +44,15 @@ def _resource(region: str | None, endpoint: str | None) -> Any:
     return boto3.resource("dynamodb", region_name=region)
 
 
+def _conditional_failed(e: ClientError) -> bool:
+    return e.response["Error"]["Code"] in ("ConditionalCheckFailedException", "TransactionCanceledException")
+
+
 class DynamoStore(Store):
     def __init__(self, table_name: str, region: str | None = None, resource: Any = None, endpoint: str | None = None):
         dynamodb = resource or _resource(region, endpoint)
         self.table = dynamodb.Table(table_name)
+        self._client = self.table.meta.client
 
     @staticmethod
     def create_table(
@@ -70,13 +82,15 @@ class DynamoStore(Store):
         self.table.put_item(Item={"pk": pk, "sk": sk, "doc": json.dumps(doc), **attrs})
 
     def _get(self, pk: str, sk: str = "META") -> Record | None:
-        item = self.table.get_item(Key={"pk": pk, "sk": sk}).get("Item")
+        item = self.table.get_item(Key={"pk": pk, "sk": sk}, ConsistentRead=True).get("Item")
         return json.loads(item["doc"]) if item else None
 
     def _query(self, key_condition: Any, index: str | None = None, forward: bool = True, limit: int | None = None):
         kwargs: dict[str, Any] = {"KeyConditionExpression": key_condition, "ScanIndexForward": forward}
         if index:
             kwargs["IndexName"] = index
+        else:
+            kwargs["ConsistentRead"] = True
         out: list[Record] = []
         while True:
             resp = self.table.query(**kwargs)
@@ -86,8 +100,18 @@ class DynamoStore(Store):
             kwargs["ExclusiveStartKey"] = resp["LastEvaluatedKey"]
 
     # Incidents
+    def _incident_item(self, incident: Record) -> Record:
+        return {
+            "pk": f"INC#{incident['id']}",
+            "sk": "META",
+            "doc": json.dumps(incident),
+            "status": incident["status"],
+            "gsi1pk": "INCIDENT",
+            "gsi1sk": incident["created_at"],
+        }
+
     def put_incident(self, incident: Record) -> None:
-        self._put(f"INC#{incident['id']}", "META", incident, gsi1pk="INCIDENT", gsi1sk=incident["created_at"])
+        self.table.put_item(Item=self._incident_item(incident), ConditionExpression="attribute_not_exists(pk)")
 
     def get_incident(self, incident_id: str) -> Record | None:
         return self._get(f"INC#{incident_id}")
@@ -95,26 +119,76 @@ class DynamoStore(Store):
     def list_incidents(self, limit: int = 50) -> list[Record]:
         return self._query(Key("gsi1pk").eq("INCIDENT"), index=GSI, forward=False, limit=limit)
 
-    # Events
-    def append_event(self, event: Record) -> None:
-        sk = f"EVT#{event['created_at']}#{next(_event_seq):012d}#{event['id']}"
-        self._put(f"INC#{event['incident_id']}", sk, event)
+    def transition_incident(self, incident_id: str, from_status: str, updates: Record) -> Record | None:
+        current = self.get_incident(incident_id)
+        if current is None or current["status"] != from_status:
+            return None
+        incident = {**current, **updates}
+        try:
+            self.table.put_item(
+                Item=self._incident_item(incident),
+                ConditionExpression="#s = :from",
+                ExpressionAttributeNames={"#s": "status"},
+                ExpressionAttributeValues={":from": from_status},
+            )
+        except ClientError as e:
+            if _conditional_failed(e):
+                return None
+            raise
+        return incident
+
+    # Audit log
+    def append_event(self, event: Record) -> Record:
+        # The resource's client serializes plain Python values itself (no {"S": ...} wrappers).
+        pk = f"INC#{event['incident_id']}"
+        table = self.table.name
+        for _ in range(20):
+            head_item = self._client.get_item(TableName=table, Key={"pk": pk, "sk": "CHAIN"}, ConsistentRead=True).get(
+                "Item"
+            )
+            prev_hash = head_item["head"] if head_item else GENESIS_HASH
+            sealed = seal(event, prev_hash)
+            sk = f"EVT#{event['created_at']}#{next(_event_seq):012d}#{event['id']}"
+            head_update: dict[str, Any] = {
+                "TableName": table,
+                "Key": {"pk": pk, "sk": "CHAIN"},
+                "UpdateExpression": "SET head = :new",
+                "ExpressionAttributeValues": {":new": sealed["hash"]},
+            }
+            if head_item:
+                head_update["ConditionExpression"] = "head = :prev"
+                head_update["ExpressionAttributeValues"][":prev"] = prev_hash
+            else:
+                head_update["ConditionExpression"] = "attribute_not_exists(head)"
+            try:
+                self._client.transact_write_items(
+                    TransactItems=[
+                        {"Put": {"TableName": table, "Item": {"pk": pk, "sk": sk, "doc": json.dumps(sealed)}}},
+                        {"Update": head_update},
+                    ]
+                )
+                return sealed
+            except ClientError as e:
+                if not _conditional_failed(e):
+                    raise
+        raise RuntimeError(f"Could not append to the audit chain of {event['incident_id']}")
 
     def list_events(self, incident_id: str) -> list[Record]:
         return self._query(Key("pk").eq(f"INC#{incident_id}") & Key("sk").begins_with("EVT#"))
 
     # Approvals
+    def _approval_item(self, approval: Record) -> Record:
+        return {
+            "pk": f"APR#{approval['id']}",
+            "sk": "META",
+            "doc": json.dumps(approval),
+            "status": approval["status"],
+            "gsi1pk": "APPROVAL",
+            "gsi1sk": approval["created_at"],
+        }
+
     def put_approval(self, approval: Record) -> None:
-        self.table.put_item(
-            Item={
-                "pk": f"APR#{approval['id']}",
-                "sk": "META",
-                "doc": json.dumps(approval),
-                "status": approval["status"],
-                "gsi1pk": "APPROVAL",
-                "gsi1sk": approval["created_at"],
-            }
-        )
+        self.table.put_item(Item=self._approval_item(approval))
 
     def get_approval(self, approval_id: str) -> Record | None:
         return self._get(f"APR#{approval_id}")
@@ -134,23 +208,49 @@ class DynamoStore(Store):
         approval = {**current, **updates}
         try:
             self.table.put_item(
-                Item={
-                    "pk": f"APR#{approval_id}",
-                    "sk": "META",
-                    "doc": json.dumps(approval),
-                    "status": approval["status"],
-                    "gsi1pk": "APPROVAL",
-                    "gsi1sk": approval["created_at"],
-                },
+                Item=self._approval_item(approval),
                 ConditionExpression="#s = :from",
                 ExpressionAttributeNames={"#s": "status"},
                 ExpressionAttributeValues={":from": from_status},
             )
         except ClientError as e:
-            if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            if _conditional_failed(e):
                 return None
             raise
         return approval
+
+    # Executions
+    def claim_execution(self, execution: Record) -> bool:
+        try:
+            self.table.put_item(
+                Item={"pk": f"EXE#{execution['key']}", "sk": "META", "doc": json.dumps(execution)},
+                ConditionExpression="attribute_not_exists(pk)",
+            )
+        except ClientError as e:
+            if _conditional_failed(e):
+                return False
+            raise
+        return True
+
+    def get_execution(self, key: str) -> Record | None:
+        return self._get(f"EXE#{key}")
+
+    def finish_execution(self, key: str, updates: Record) -> Record:
+        current = self.get_execution(key)
+        if current is None:
+            raise KeyError(f"Unknown execution {key}")
+        execution = {**current, **updates}
+        self._put(f"EXE#{key}", "META", execution)
+        return execution
+
+    # Dead letters
+    def put_dead_letter(self, dead_letter: Record) -> None:
+        self._put(
+            f"DLQ#{dead_letter['id']}", "META", dead_letter, gsi1pk="DEADLETTER", gsi1sk=dead_letter["created_at"]
+        )
+
+    def list_dead_letters(self, limit: int = 50) -> list[Record]:
+        return self._query(Key("gsi1pk").eq("DEADLETTER"), index=GSI, forward=False, limit=limit)
 
     # Services
     def put_service(self, service: Record) -> None:

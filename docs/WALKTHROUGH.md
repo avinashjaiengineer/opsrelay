@@ -43,7 +43,7 @@ opsrelay --help
 opsrelay up
 ```
 
-This starts five agents, each as its own A2A server, and opens the dashboard:
+This starts six agents, each as its own A2A server, and opens the dashboard:
 
 | Agent | Address |
 |---|---|
@@ -51,7 +51,8 @@ This starts five agents, each as its own A2A server, and opens the dashboard:
 | triage | http://127.0.0.1:9001 |
 | diagnostics | http://127.0.0.1:9002 |
 | remediation | http://127.0.0.1:9003 |
-| communications | http://127.0.0.1:9004 |
+| verification | http://127.0.0.1:9004 |
+| communications | http://127.0.0.1:9005 |
 
 Your browser opens **http://127.0.0.1:8080/**. If it doesn't, open that link yourself. Keep this
 terminal open; closing it (or pressing `Ctrl+C`) stops everything.
@@ -64,19 +65,27 @@ If port 8080 is in use: `opsrelay up --port 8090`, then open http://127.0.0.1:80
    this name.
 2. **Click Bad deploy.** This injects a fault: a bad release of `checkout-api` pushes its error
    rate above 20%. In **Service health**, `checkout-api` turns *degraded*.
-3. **Watch the timeline.** Within a second or two the coordinator hands the incident over A2A to:
-   - **triage**, which sets the severity (SEV1, because `checkout-api` is tier 1),
-   - **diagnostics**, which finds the root cause (release 2.14.0 introduced an exception),
-   - **remediation**, which proposes `rollback_deployment` from the runbook.
-4. **Decide.** A yellow **Human approval** card appears with the action, its risk (*high*) and
-   the rationale. Nothing has touched the service yet.
-   - Click **Approve**: the platform runs the rollback, remediation verifies the service
-     recovered, and communications posts updates and writes the **Postmortem**. Status ends at
-     **resolved**.
+3. **Watch the lifecycle bar and the timeline.** The bar under the title shows where the
+   incident is: open, triaging, investigating, awaiting approval, remediating, verifying,
+   resolved. The coordinator hands the incident over A2A to:
+   - **triage**, which submits a typed `TriageResult` (SEV1, because `checkout-api` is tier 1),
+   - **diagnostics**, which submits a `DiagnosisResult`: root cause, evidence with sources and a
+     confidence, shown under **Why the agents think this happened**,
+   - **remediation**, which proposes `rollback_deployment` with a rollback plan.
+4. **Read the policy decision.** The card under **Remediation · policy · approval** shows what the
+   policy engine decided and why (for example *rollback_deployment always requires approval*,
+   *high risk requires a person*). Nothing has touched the service yet.
+5. **Decide.**
+   - Click **Approve**: the platform runs the rollback once, the **verification** agent checks the
+     service recovered, and communications posts updates and writes the **Postmortem**. Status
+     ends at **resolved**.
    - Click **Reject** (optionally give a reason): nothing is executed, and the incident is
-     **escalated** to the owning team. With a real model, the agents may first propose one
-     alternative, guided by your reason (see the [user guide](USER_GUIDE.md#6-when-the-agents-get-it-wrong)).
-5. **Tick "show tool calls"** to see every tool each agent called and its input.
+     **escalated** to the owning team.
+6. **Tick "show tool calls"** to see every tool each agent called and its input. The green
+   **audit chain verified** badge means no event in the incident's log has been altered.
+
+Try **Traffic spike** too: scaling a tier-2 service is low risk, so the policy lets it run without
+a person, and the agents resolve the incident on their own.
 
 Try the other two scenarios the same way:
 
@@ -113,7 +122,7 @@ opsrelay approve apr-c746dc88f5 --by <your-name>     # or: opsrelay reject apr-.
 ```
 
 ```
-inc-4cf88fa7c1 mitigated and resolved. Stakeholders updated and incident inc-4cf88fa7c1 resolved with a postmortem.
+inc-4cf88fa7c1 resolved. Postmortem written.
 ```
 
 Then inspect the result:
@@ -122,6 +131,18 @@ Then inspect the result:
 opsrelay show inc-4cf88fa7c1     # incident, approvals, full timeline and postmortem
 opsrelay incidents               # every incident and its status
 opsrelay health                  # all services back to OK
+opsrelay audit inc-4cf88fa7c1    # verify the incident's tamper-evident audit chain
+```
+
+And look at the governance layer:
+
+```powershell
+opsrelay contracts                                            # lifecycle, agent contracts, who may make each move
+opsrelay policy list                                          # the remediation policy in force
+opsrelay policy test scale_service inventory-service --replicas 4    # ALLOW
+opsrelay policy test delete_database payments-db                     # DENY: never allowed
+opsrelay policy test restart_service auth-service --confidence 0.8   # APPROVAL_REQUIRED, with reasons
+opsrelay dlq                                                  # requests to agents that stayed unavailable
 ```
 
 The dashboard shows CLI-created incidents too, because both talk to the same coordinator.
@@ -155,12 +176,15 @@ What the suite covers:
 
 | File | Checks |
 |---|---|
-| `test_workflow.py` | the full incident lifecycle: approve, reject, escalate |
+| `test_workflow.py` | the full incident lifecycle: approve, reject, policy-allowed, policy-denied, inconclusive |
+| `test_lifecycle.py` | the state machine: exactly the allowed transitions, and who may make each |
+| `test_contracts.py` | agent contracts: dispatch states, typed results, pydantic rejections, retries, dead letters |
+| `test_policy.py` | policy decisions: risk, parameters, confidence thresholds, denials with reasons |
 | `test_a2a.py` | coordinator to specialists over real A2A servers |
 | `test_remote.py` | the A2A client used to reach AgentCore runtimes (SigV4) |
 | `test_runtime.py` | the coordinator API contract, the CLI in `--url` mode, the dashboard |
-| `test_approvals.py` | risk rating, one decision per approval, auto-approve policy |
-| `test_store.py` | SQLite and DynamoDB (mocked with moto) stores behave the same |
+| `test_approvals.py` | proposal, approval and execution engines; idempotent execution |
+| `test_store.py` | SQLite and DynamoDB (moto) stores: compare-and-set status, hash chain, tamper detection |
 | `test_agents.py` | agent tools and their guards |
 | `test_infra.py` | the CDK stack synthesizes the expected AWS resources |
 

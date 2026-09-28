@@ -1,0 +1,51 @@
+# OpsRelay remediation policy.
+#
+# Every action a remediation agent proposes is evaluated against this file by
+# opsrelay/policy.py, before any approval or execution:
+#
+#   proposal -> policy engine -> ALLOW | APPROVAL_REQUIRED | DENY
+#
+# Point OPSRELAY_POLICY_FILE at your own copy to change it. `opsrelay policy list` shows what is
+# loaded, and `opsrelay policy test ACTION SERVICE` shows the decision for a proposal.
+
+version: 1
+
+defaults:
+  # Actions not listed under `actions` are denied.
+  unknown_action: deny
+  # Risk is one level higher on tier-1 services (never raised above high by this rule).
+  tier1_raises_risk: true
+  # At or above this effective risk a person must approve, whatever the action says.
+  human_required_at_risk: medium
+  # After this many proposals on one incident, further proposals are denied.
+  max_proposals_per_incident: 3
+
+confidence:
+  # Diagnosis confidence below this: proposals are denied and the incident goes to a human.
+  escalate_below: 0.70
+  # Below this: a person must approve, even for actions that don't normally need approval.
+  human_required_below: 0.90
+
+actions:
+  rollback_deployment:
+    risk: high
+    requires_approval: true
+    parameters: [target_version]
+
+  restart_service:
+    risk: medium
+    requires_approval: true
+
+  scale_service:
+    risk: low
+    requires_approval: false
+    required_parameters: [replicas]
+    max_replicas: 10
+
+  flush_cache:
+    risk: low
+    requires_approval: true
+
+  delete_database:
+    risk: critical
+    allowed: false

@@ -6,6 +6,11 @@ Every screenshot below is from a real run: `opsrelay up` with the agents on **Am
 through Amazon Bedrock. Nothing was scripted or edited; the agents wrote every sentence you see.
 (To install and start OpsRelay, see [WALKTHROUGH.md](WALKTHROUGH.md).)
 
+> The screenshots are from v0.1. Since v0.2 the same pages also show the incident's **lifecycle
+> bar**, a **Why the agents think this happened** panel with evidence and confidence, the
+> **policy engine's decision** on each approval card, and an **audit chain verified** badge; see
+> [What v0.2 added](#what-v02-added).
+
 ![The whole workflow: trigger, investigate, approve, resolve](images/workflow.gif)
 
 ## Contents
@@ -17,6 +22,7 @@ through Amazon Bedrock. Nothing was scripted or edited; the agents wrote every s
   - [4. Every step is on the record](#4-every-step-is-on-the-record)
   - [5. Fixed, verified and written up](#5-fixed-verified-and-written-up)
   - [6. When the agents get it wrong](#6-when-the-agents-get-it-wrong)
+- [What v0.2 added](#what-v02-added)
 - [How to use it](#how-to-use-it)
 - [Why it's useful](#why-its-useful)
 - [How it could be improved](#how-it-could-be-improved)
@@ -62,8 +68,10 @@ About 30 seconds after the alert:
   rated **high risk** because checkout is tier 1.
 
 The yellow card is the **human approval gate**. The agents cannot run the rollback themselves:
-`propose_action` only records a request. The platform executes it after a person clicks
-**Approve**, and that rule is enforced in code, not in a prompt.
+remediation only submits a typed proposal. The **policy engine** decides whether it may run and
+whether a person must approve it (here: yes, because rollbacks always need approval and the risk
+is high), and the platform executes it only after a person clicks **Approve**. All of that is
+enforced in code, not in a prompt.
 
 ### 4. Every step is on the record
 
@@ -80,7 +88,8 @@ audit log: it's append-only and records who (or which agent) did what, and when.
 After **Approve**:
 
 1. The platform rolls `checkout-api` back to 2.13.4, recorded as *Decided by Jane (on-call SRE)*.
-2. **Remediation** checks the metrics and confirms recovery (0.2% errors, 180 ms).
+2. The **verification** agent (not the one that proposed the fix) checks the metrics and confirms
+   recovery (0.2% errors, 180 ms); the platform cross-checks its claim against live metrics.
 3. **Communications** posts an internal update and a customer-facing update, then resolves the
    incident.
 
@@ -100,18 +109,33 @@ Diagnostics correctly found a memory leak in the session cache, and remediation'
 rationale says *the runbook recommends a restart*. But it proposed `scale_service` to 6
 replicas instead. More replicas of a leaking service just leak more memory.
 
-![Rejected with a reason; the agents propose the runbook's restart](images/08-rejected-and-corrected.jpg)
+The approver clicks **Reject** with the reason *"Scaling out won't fix a leak; runbook says
+restart"*. Nothing runs. The incident moves from `awaiting_approval` to `escalated`, the only
+move the lifecycle allows after a rejection, and the reason is recorded as the escalation
+reason, attributed to the approver. Communications posts an internal update so the owning team
+knows to act. Wrong proposals stop at a person, and the person's reason stays on the record.
 
-The approver clicked **Reject** with the reason *"Scaling out won't fix a leak; runbook says
-restart"*. The coordinator is allowed one alternative after a rejection, so it asked
-remediation again, which proposed `restart_service`, the runbook's fix.
+## What v0.2 added
 
-![Restart approved, incident resolved](images/09-resolved-after-feedback.jpg)
+v0.2 turned the approval gate into a full governance layer. Every piece is enforced by the
+platform, whatever the model does:
 
-The restart was approved and executed, auth-service recovered, and the incident was resolved.
-Nothing ran without a person saying yes, and the reviewer's note steered the agents to the
-right fix. If the second proposal had also been wrong, rejecting it would have escalated the
-incident to the owning team.
+- **A state machine.** Incidents move only `open → triaging → investigating → awaiting_approval →
+  remediating → verifying → resolved`, or to `failed` and `escalated`. Every move is checked and
+  written atomically; nothing can change status any other way.
+- **Typed agent contracts.** Each agent submits a pydantic-validated result (`TriageResult`,
+  `DiagnosisResult` with evidence and confidence, `RemediationProposal` with a rollback plan,
+  `VerificationResult`, `Postmortem`). Invalid output is sent back to the agent with the errors.
+  Each agent acts only in its own states and gets only its own tools.
+- **A policy engine** (`opsrelay/policies.yaml`): ALLOW, APPROVAL_REQUIRED or DENY for every
+  proposal, with reasons. `delete_database` is never allowed; scaling a tier-2 service runs without
+  a person; a diagnosis below 70% confidence can't be acted on, and below 90% always needs a person.
+- **Propose, approve, execute and verify are separate.** A dedicated verification agent judges the
+  outcome, and the execution engine runs each action once per idempotency key.
+- **Resilience.** Retries with backoff, a circuit breaker per agent, a dead-letter queue, and
+  escalation to a person when an agent stays down.
+- **A tamper-evident audit log.** Each event carries the hash of the one before it;
+  `opsrelay audit <incident>` finds the first altered or missing event.
 
 ## How to use it
 
@@ -169,7 +193,9 @@ what it would take to use it on real systems.
 
 ## How it could be improved
 
-Ideas grouped by what they'd fix. The first three came straight out of the runs above.
+Ideas grouped by what they'd fix. Typed contracts, the policy engine, confidence thresholds,
+a proposal limit, a verification agent, idempotent execution, retries and dead letters, and a
+hash-chained audit log are already done (see [What v0.2 added](#what-v02-added)).
 
 **Safety and correctness**
 
@@ -184,8 +210,9 @@ Ideas grouped by what they'd fix. The first three came straight out of the runs 
 - **Log in to the dashboard.** The dashboard has no login today, so the EC2 setup restricts it to
   one IP address. Adding sign-in (for example Amazon Cognito, or an AgentCore JWT authorizer)
   would make the approver's name come from a verified identity, not a text box.
-- **Guardrails.** Add Bedrock Guardrails on the model, and cap how many actions an incident can
-  run.
+- **Guardrails.** Add Bedrock Guardrails on the model.
+- **Roles.** Viewer, operator, incident commander, SRE, admin and auditor roles, so only some
+  people can approve high-risk actions or change the policy.
 
 **Connect it to real systems**
 
@@ -204,10 +231,15 @@ Ideas grouped by what they'd fix. The first three came straight out of the runs 
 - **Live updates instead of polling.** The page re-fetches everything every 1.5 seconds and
   redraws it, which makes text hard to select. Server-sent events would update only what
   changed.
-- **Show the reviewer's feedback.** When a rejection note leads to a new proposal, link the two
-  on the card so it's clear which feedback led to the new proposal.
 - **History and metrics.** Time to diagnose, time to approve, time to resolve, and how often
   proposals are approved or rejected, per scenario and per model.
+
+**Intelligence**
+
+- **Runbook search and incident memory.** Retrieve relevant runbooks and similar past incidents
+  (with their postmortems and rejection notes) for diagnosis and remediation, so a correction only
+  has to be made once.
+- **Replay.** Re-run a recorded incident against a new agent or model version and compare.
 
 **Running it**
 

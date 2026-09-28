@@ -72,6 +72,17 @@
   label.toggle { font-size: 12px; color: var(--muted); display: inline-flex; gap: 6px; align-items: center; float: right; }
   label.toggle input { width: auto; }
   #error { display: none; margin: 0 24px; padding: 10px 14px; border-radius: 8px; }
+  .lifecycle { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin: 10px 0 2px; font-size: 12px; }
+  .lifecycle .step { padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+  .lifecycle .step.done { color: var(--ok); border-color: var(--ok); }
+  .lifecycle .step.now { color: var(--accent-ink); background: var(--accent); border-color: var(--accent); font-weight: 600; }
+  .lifecycle .arrow { color: var(--muted); }
+  ul.evidence { list-style: none; padding: 0; margin: 8px 0 0; }
+  ul.evidence li { padding: 3px 0; overflow-wrap: anywhere; }
+  .policy { margin-top: 8px; font-size: 13px; }
+  .policy ul { margin: 4px 0 0; padding-left: 18px; color: var(--muted); }
+  section.warning { border-color: var(--bad); background: var(--bad-bg); color: var(--bad); }
+  ol.timeline li.transition .msg { font-weight: 600; }
 </style>
 </head>
 <body>
@@ -110,17 +121,31 @@
 </main>
 <script>
 const STATUS = {
-  open: "info", investigating: "info", awaiting_approval: "warn",
-  mitigated: "ok", resolved: "ok", escalated: "bad",
-  pending: "warn", approved: "info", executed: "ok", rejected: "bad", failed: "bad",
+  open: "info", triaging: "info", investigating: "info", awaiting_approval: "warn",
+  remediating: "info", verifying: "info", resolved: "ok", failed: "bad", escalated: "bad",
+  pending: "warn", approved: "info", executed: "ok", rejected: "bad", denied: "bad", cancelled: "info",
+  ALLOW: "ok", APPROVAL_REQUIRED: "warn", DENY: "bad",
 };
+const LIFECYCLE = ["open", "triaging", "investigating", "awaiting_approval", "remediating", "verifying", "resolved"];
+const HIDDEN = new Set(["tool.invoked", "tool.completed", "tool.failed"]);
 let selected = null;
 let showTools = false;
 let busy = false;
 
 const $ = (id) => document.getElementById(id);
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
-const chip = (s) => `<span class="chip ${STATUS[s] || "info"}">${esc(String(s).replace("_", " "))}</span>`;
+const chip = (s) => `<span class="chip ${STATUS[s] || "info"}">${esc(String(s).replaceAll("_", " "))}</span>`;
+const pct = (x) => (x == null ? "" : `${Math.round(x * 100)}%`);
+
+function lifecycle(status) {
+  const off = status === "failed" || status === "escalated";
+  const at = LIFECYCLE.indexOf(status);
+  const steps = LIFECYCLE.map((s, n) => {
+    const cls = s === status ? "now" : !off && n < at ? "done" : "";
+    return `<span class="step ${cls}">${esc(s.replaceAll("_", " "))}</span>`;
+  }).join('<span class="arrow">→</span>');
+  return `<div class="lifecycle">${steps}${off ? `<span class="arrow">⇢</span>${chip(status)}` : ""}</div>`;
+}
 const time = (iso) => (iso || "").slice(11, 19);
 
 try { $("approver").value = localStorage.getItem("opsrelay.approver") || ""; } catch {}
@@ -178,46 +203,69 @@ function renderIncidents(incidents) {
   $("incidents").classList.remove("empty");
   $("incidents").innerHTML = incidents.map((i) => `
     <button class="incident ${i.id === selected ? "active" : ""}" onclick="select('${esc(i.id)}')">
-      ${chip(i.status)} ${i.severity ? `<span class="chip info">${esc(i.severity.toUpperCase())}</span>` : ""}
+      ${chip(i.status)} ${i.severity ? `<span class="chip info">${esc(i.severity)}</span>` : ""}
       <div>${esc(i.title)}</div>
       <div class="meta">${esc(i.id)} · ${time(i.created_at)}</div>
     </button>`).join("");
 }
 
-function renderDetail(data) {
+function renderDetail(data, audit) {
   const i = data.incident;
+  const tri = i.triage || {}, dx = i.diagnosis || {}, ver = i.verification || {};
   const facts = [
-    ["Service", i.service], ["Severity", i.severity && i.severity.toUpperCase()], ["Triage", i.triage_summary],
-    ["Root cause", i.root_cause], ["Evidence", (i.evidence || []).join("\n")], ["Recommended", i.recommended_action],
-    ["Escalation", i.escalation_reason],
+    ["Service", i.service], ["Severity", i.severity],
+    ["Impact", tri.customer_impact && `${tri.customer_impact} (triage confidence ${pct(tri.confidence)})`],
+    ["Recommended", i.recommended_action],
+    ["Verification", ver.summary && `${ver.recovered ? "✓ Recovered" : "✗ Not recovered"}: ${ver.summary}`],
+    ["Failure", i.failure_reason], ["Escalation", i.escalation_reason],
   ].filter(([, v]) => v);
-  const approvals = data.approvals.map((a) => `
+  const why = dx.root_cause ? `
+    <section>
+      <h2>Why the agents think this happened <span class="chip ${dx.confidence >= 0.9 ? "ok" : dx.confidence >= 0.7 ? "warn" : "bad"}">confidence ${pct(dx.confidence)}</span></h2>
+      <div class="msg"><strong>${esc(dx.root_cause)}</strong></div>
+      <div class="kind">Component: ${esc(dx.affected_component)} · category ${esc(dx.category)}</div>
+      <ul class="evidence">${(dx.evidence || []).map((e) => `<li><span class="chip info">${esc(e.source)}</span> ${esc(e.value)}</li>`).join("")}</ul>
+    </section>` : "";
+  const approvals = data.approvals.map((a) => {
+    const p = a.policy || {};
+    return `
     <div class="approval ${a.status === "pending" ? "pending" : ""}">
       ${chip(a.status)} <strong>${esc(a.action)}</strong> on ${esc(a.service)}
       ${Object.keys(a.params || {}).length ? `<span class="kind">${esc(JSON.stringify(a.params))}</span>` : ""}
-      · risk <strong>${esc(a.risk)}</strong>
+      · risk <strong>${esc(a.risk)}</strong>${a.agent_risk && a.agent_risk !== a.risk ? ` <span class="kind">(agent said ${esc(a.agent_risk)})</span>` : ""}
       <div class="msg">${esc(a.rationale)}</div>
+      ${a.rollback_plan ? `<div class="kind">Rollback plan: ${esc(a.rollback_plan)}</div>` : ""}
+      ${p.decision ? `<div class="policy">${chip(p.decision)} <span class="kind">policy ${esc(p.policy_version)}</span>
+        <ul>${(p.reasons || []).map((r) => `<li>${esc(r)}</li>`).join("")}</ul></div>` : ""}
       ${a.decided_by ? `<div class="kind">Decided by ${esc(a.decided_by)}${a.note ? ": " + esc(a.note) : ""}${a.result ? " · " + esc(a.result.detail) : ""}</div>` : ""}
       ${a.status === "pending" ? `<div class="actions">
           <button class="primary" onclick="decide('${esc(a.id)}', true)">Approve</button>
           <button class="danger" onclick="decide('${esc(a.id)}', false)">Reject</button></div>` : ""}
-    </div>`).join("");
-  const events = data.events.filter((e) => showTools || e.kind !== "tool.call");
+    </div>`;
+  }).join("");
+  const warnings = data.events.filter((e) => e.kind === "contract.violation" || e.kind === "agent.unavailable");
+  const events = data.events.filter((e) => showTools ? e.kind !== "tool.completed" : !HIDDEN.has(e.kind));
+  const auditChip = audit ? (audit.ok
+    ? `<span class="chip ok" title="head ${esc(audit.head)}">audit chain verified · ${audit.events} events</span>`
+    : `<span class="chip bad">audit chain broken at event #${audit.at}</span>`) : "";
   $("detail").innerHTML = `
     <section>
-      <div>${chip(i.status)} <span class="kind">${esc(i.id)}</span></div>
+      <div>${chip(i.status)} <span class="kind">${esc(i.id)}</span> ${auditChip}</div>
+      ${lifecycle(i.status)}
       <h2 style="margin-top:8px;color:var(--ink);text-transform:none;letter-spacing:0;font-size:17px">${esc(i.title)}</h2>
       <div class="msg">${esc(i.description)}</div>
       ${facts.length ? `<dl class="facts">${facts.map(([k, v]) => `<dt>${k}</dt><dd class="msg">${esc(v)}</dd>`).join("")}</dl>` : ""}
     </section>
-    ${approvals ? `<section><h2>Human approval</h2>${approvals}</section>` : ""}
+    ${warnings.map((w) => `<section class="warning">⚠ <strong>${esc(w.kind === "agent.unavailable" ? "Agent unavailable" : "Contract violation")}</strong> · ${esc(w.message)}</section>`).join("")}
+    ${why}
+    ${approvals ? `<section><h2>Remediation · policy · approval</h2>${approvals}</section>` : ""}
     <section>
       <h2>Agent timeline <label class="toggle"><input type="checkbox" ${showTools ? "checked" : ""}
           onchange="toggleTools(this.checked)">show tool calls</label></h2>
       <ol class="timeline">${events.map((e) => `
-        <li><span class="t">${time(e.created_at)}</span>
+        <li class="${e.kind === "status.changed" ? "transition" : ""}"><span class="t">${time(e.created_at)}</span>
             <span><span class="actor">${esc(e.actor)}</span><br><span class="kind">${esc(e.kind)}</span></span>
-            <span class="msg">${esc(e.kind === "tool.call" ? e.message + " " + JSON.stringify(e.data.input || {}) : e.message)}</span></li>`).join("")}
+            <span class="msg">${esc(e.kind === "tool.invoked" ? e.message + " " + JSON.stringify((e.data || {}).input || {}) : e.message)}</span></li>`).join("")}
       </ol>
     </section>
     ${i.postmortem ? `<section><h2>Postmortem</h2><pre>${esc(i.postmortem)}</pre></section>` : ""}`;
@@ -230,7 +278,13 @@ async function refresh() {
     const [health, list] = await Promise.all([call({action: "health"}), call({action: "list_incidents"})]);
     renderHealth(health.services);
     renderIncidents(list.incidents);
-    if (selected) renderDetail(await call({action: "get_incident", incident_id: selected}));
+    if (selected) {
+      const [detail, audit] = await Promise.all([
+        call({action: "get_incident", incident_id: selected}),
+        call({action: "verify_audit", incident_id: selected}).catch(() => null),
+      ]);
+      renderDetail(detail, audit);
+    }
     $("conn").textContent = "live"; $("conn").className = "chip ok";
   } catch (e) {
     $("conn").textContent = "disconnected"; $("conn").className = "chip bad";

@@ -1,17 +1,23 @@
-"""Builds the Strands agents."""
+"""Builds the Strands agents, and enforces their contracts at every delegation."""
 
+import json
 import logging
 from collections.abc import Awaitable, Callable
 
 from strands import Agent, tool
-from strands.hooks import AfterToolCallEvent, HookProvider, HookRegistry
+from strands.hooks import AfterToolCallEvent, BeforeToolCallEvent, HookProvider, HookRegistry
 from strands.models.model import Model
 
 from ..config import SPECIALISTS, Role, get_settings
+from ..contracts import CONTRACTS, COORDINATOR_TOOLS
+from ..deadletter import dead_letter
 from ..environment import Environment
+from ..lifecycle import IllegalTransition, Status, status_of, transition
 from ..offline import POLICIES, ScriptedModel
-from ..store import Store
+from ..resilience import Attempt, call_with_retry
+from ..store import Record, Store
 from . import tools
+from .meta import agent_meta
 from .prompts import DESCRIPTIONS, PROMPTS
 
 log = logging.getLogger(__name__)
@@ -34,32 +40,43 @@ def build_model(role: Role) -> Model:
 
 
 class AuditHook(HookProvider):
-    """Writes every tool call an agent makes to the incident's audit log."""
+    """Writes every tool call an agent makes to the incident's audit log, before and after."""
 
     def __init__(self, store: Store, actor: str):
         self.store = store
         self.actor = actor
 
     def register_hooks(self, registry: HookRegistry, **kwargs) -> None:  # noqa: ANN003
+        registry.add_callback(BeforeToolCallEvent, self._before_tool)
         registry.add_callback(AfterToolCallEvent, self._after_tool)
 
-    def _after_tool(self, event: AfterToolCallEvent) -> None:
-        name = event.tool_use["name"]
-        if name.startswith("ask_"):
-            return  # delegations are logged by the delegation tool itself
-        tool_input = event.tool_use.get("input") or {}
-        result = event.result or {}
-        text = "".join(c.get("text", "") for c in result.get("content", []) if isinstance(c, dict))
+    def _record(self, kind: str, tool_use: dict, data: dict, **hashes) -> None:  # noqa: ANN003
+        tool_input = tool_use.get("input") or {}
+        incident_id = tool_input.get("incident_id") if isinstance(tool_input, dict) else None
         try:
             self.store.record(
-                tool_input.get("incident_id") if isinstance(tool_input, dict) else None,
-                self.actor,
-                "tool.call",
-                name,
-                {"input": tool_input, "status": result.get("status"), "result": text[:500]},
+                incident_id, self.actor, kind, tool_use["name"], {**data, **agent_meta(self.actor)}, **hashes
             )
         except Exception:  # noqa: BLE001 - auditing must never break the agent
-            log.exception("failed to record tool call")
+            log.exception("failed to record %s", kind)
+
+    def _before_tool(self, event: BeforeToolCallEvent) -> None:
+        if event.tool_use["name"].startswith("ask_"):
+            return  # delegations are logged by the delegation tool itself
+        tool_input = event.tool_use.get("input") or {}
+        self._record("tool.invoked", event.tool_use, {"input": tool_input}, input=tool_input)
+
+    def _after_tool(self, event: AfterToolCallEvent) -> None:
+        if event.tool_use["name"].startswith("ask_"):
+            return
+        result = event.result or {}
+        text = "".join(c.get("text", "") for c in result.get("content", []) if isinstance(c, dict))
+        self._record(
+            "tool.completed",
+            event.tool_use,
+            {"input": event.tool_use.get("input") or {}, "status": result.get("status"), "result": text[:500]},
+            output=text,
+        )
 
 
 def _agent(role: Role, store: Store, agent_tools: list) -> Agent:
@@ -74,39 +91,130 @@ def _agent(role: Role, store: Store, agent_tools: list) -> Agent:
     )
 
 
+def _check_tools(role: str, agent_tools: list, allowed: frozenset[str]) -> list:
+    names = {t.tool_name for t in agent_tools}
+    if names != allowed:
+        raise RuntimeError(f"{role} tools {sorted(names)} do not match its contract {sorted(allowed)}")
+    return agent_tools
+
+
 def build_specialist(role: Role, store: Store, env: Environment) -> Agent:
-    if role == "triage":
-        agent_tools = tools.triage_tools(store, env, role)
-    elif role == "diagnostics":
-        agent_tools = tools.diagnostics_tools(store, env, role)
-    elif role == "remediation":
-        agent_tools = tools.remediation_tools(store, env, role)
-    elif role == "communications":
+    if role not in CONTRACTS:
+        raise ValueError(f"{role} is not a specialist")
+    if role == "communications":
         agent_tools = tools.communications_tools(store, role)
     else:
-        raise ValueError(f"{role} is not a specialist")
-    return _agent(role, store, agent_tools)
+        agent_tools = tools.TOOL_FACTORIES[role](store, env, role)
+    return _agent(role, store, _check_tools(role, agent_tools, CONTRACTS[role].tools))
+
+
+def _latest_result(role: str, events: list[Record]) -> dict | None:
+    for event in reversed(events):
+        result = (event.get("data") or {}).get("result")
+        if event["actor"] == role and not event["kind"].startswith("tool.") and isinstance(result, dict):
+            return {"kind": event["kind"], **result}
+    return None
 
 
 def _delegation_tool(role: Role, invoke: Invoker, store: Store):
-    @tool(name=f"ask_{role}", description=f"Delegate to the {role} agent over A2A. {DESCRIPTIONS[role]}")
+    contract = CONTRACTS[role]
+    states = ", ".join(sorted(contract.acts_in))
+
+    @tool(
+        name=f"ask_{role}",
+        description=f"Delegate to the {role} agent over A2A. {contract.purpose} "
+        f"It acts only on incidents that are: {states}.",
+    )
     async def ask(incident_id: str, request: str) -> str:
-        """Send a request to a specialist agent and return its report.
+        """Send a request to a specialist agent. Returns its typed result and the incident's new status.
 
         Args:
             incident_id: The incident id the request is about.
             request: What you need the specialist to do.
         """
+        incident = store.get_incident(incident_id)
+        if incident is None:
+            return json.dumps({"error": f"Unknown incident {incident_id}"})
+        status = status_of(incident)
+        if role == "triage" and status is Status.OPEN:
+            try:
+                incident = transition(store, incident_id, Status.TRIAGING, actor="coordinator", reason="sent to triage")
+                status = Status.TRIAGING
+            except IllegalTransition as e:
+                return json.dumps({"error": str(e)})
+        problem = contract.check_dispatch(status)
+        if problem:
+            store.record(
+                incident_id,
+                "platform",
+                "contract.violation",
+                f"Refused to dispatch {role}: {problem}",
+                {"agent": role, "phase": "dispatch"},
+            )
+            return json.dumps({"error": problem, "incident_status": str(status)})
+
+        before = incident
+        seen = len(store.list_events(incident_id))
+        store.record(incident_id, "coordinator", "a2a.request", f"-> {role}: {request}", {"agent": role})
         message = f"Incident {incident_id}: {request}"
-        store.record(incident_id, "coordinator", "a2a.request", f"-> {role}: {request}")
+        attempts: list[str] = []
+
+        def new_events() -> list[Record]:
+            return store.list_events(incident_id)[seen:]
+
+        def done() -> bool:
+            after = store.get_incident(incident_id)
+            return after is not None and contract.postcondition(before, after, new_events()) is None
+
+        def on_retry(attempt: Attempt) -> None:
+            attempts.append(attempt.error)
+            store.record(
+                incident_id,
+                "platform",
+                "agent.retry",
+                f"{role} attempt {attempt.number} failed: {attempt.error}",
+                {"agent": role, "attempt": attempt.number},
+            )
+
         try:
-            reply = await invoke(message)
-        except Exception as e:  # noqa: BLE001 - a failed delegation is a result the coordinator can act on
-            log.exception("delegation to %s failed", role)
-            store.record(incident_id, "coordinator", "a2a.error", f"{role} failed: {e}")
-            return f"ERROR: the {role} agent failed: {type(e).__name__}: {e}"
-        store.record(incident_id, role, "a2a.response", reply[:2000])
-        return reply
+            reply = await call_with_retry(role, lambda: invoke(message), done=done, on_retry=on_retry)
+        except Exception as e:  # noqa: BLE001 - an unavailable agent is a result the platform handles
+            log.warning("delegation to %s failed: %s", role, e)
+            letter = dead_letter(store, incident_id, role, request, attempts or [f"{type(e).__name__}: {e}"], str(e))
+            after = store.get_incident(incident_id) or before
+            return json.dumps(
+                {
+                    "error": f"The {role} agent is unavailable ({e}). The request went to the dead-letter queue "
+                    f"({letter['id']}) and the incident was handed to a human.",
+                    "incident_status": after["status"],
+                }
+            )
+
+        after = store.get_incident(incident_id) or before
+        events = new_events()
+        store.record(incident_id, role, "a2a.response", reply[:2000], {**agent_meta(role)})
+        problem = contract.postcondition(before, after, events)
+        if problem:
+            store.record(
+                incident_id, "platform", "contract.violation", f"{role}: {problem}", {"agent": role, "phase": "result"}
+            )
+            return json.dumps(
+                {
+                    "agent": role,
+                    "contract_violation": problem,
+                    "incident_status": after["status"],
+                    "reply": reply[:1000],
+                }
+            )
+        return json.dumps(
+            {
+                "agent": role,
+                "result": _latest_result(role, events),
+                "incident_status": after["status"],
+                "summary": reply[:1000],
+            },
+            default=str,
+        )
 
     return ask
 
@@ -126,4 +234,5 @@ def build_coordinator(store: Store, env: Environment, invokers: dict[Role, Invok
     (in-process or over A2A); by default every specialist runs in-process."""
     invokers = invokers or {role: local_invoker(role, store, env) for role in SPECIALISTS}
     delegation = [_delegation_tool(role, invokers[role], store) for role in SPECIALISTS]
-    return _agent("coordinator", store, [*tools.coordinator_tools(store, "coordinator"), *delegation])
+    agent_tools = [*tools.coordinator_tools(store, "coordinator"), *delegation]
+    return _agent("coordinator", store, _check_tools("coordinator", agent_tools, COORDINATOR_TOOLS))

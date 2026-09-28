@@ -3,6 +3,7 @@ from strands.models import BedrockModel
 from opsrelay.agents import build_coordinator, build_specialist
 from opsrelay.agents.factory import build_model
 from opsrelay.config import SPECIALISTS, get_settings
+from opsrelay.contracts import CONTRACTS, COORDINATOR_TOOLS
 from opsrelay.offline import ScriptedModel
 
 
@@ -23,14 +24,16 @@ def test_offline_is_the_default():
     assert isinstance(build_model("coordinator"), ScriptedModel)
 
 
-def test_each_agent_gets_only_its_own_tools(store, env):
+def test_each_agent_gets_exactly_its_contracts_tools(store, env):
     tools = {role: set(build_specialist(role, store, env).tool_names) for role in SPECIALISTS}
     tools["coordinator"] = set(build_coordinator(store, env).tool_names)
 
-    assert "propose_action" in tools["remediation"]
-    # Only remediation can propose actions, and nobody can execute them directly.
-    assert all("propose_action" not in t for role, t in tools.items() if role != "remediation")
+    for role in SPECIALISTS:
+        assert tools[role] == CONTRACTS[role].tools, role
+    assert tools["coordinator"] == COORDINATOR_TOOLS
+    # Least privilege: only remediation can propose, nobody can execute, only communications resolves.
+    assert all("submit_proposal" not in t for role, t in tools.items() if role != "remediation")
     assert not any("execute" in name for t in tools.values() for name in t)
-    assert "resolve_incident" in tools["communications"]
-    assert {f"ask_{role}" for role in SPECIALISTS} <= tools["coordinator"]
+    assert all("submit_postmortem" not in t for role, t in tools.items() if role != "communications")
+    assert "get_metrics" not in tools["communications"]
     assert not any(name.startswith("ask_") for role in SPECIALISTS for name in tools[role])

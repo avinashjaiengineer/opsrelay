@@ -1,4 +1,4 @@
-# The same topology as on AgentCore, on your machine: four specialist A2A servers and a
+# The same topology as on AgentCore, on your machine: five specialist A2A servers and a
 # coordinator that reaches them over A2A. State goes to a local DynamoDB.
 #
 #   docker compose up --build
@@ -44,6 +44,9 @@ services:
   remediation:
     <<: *agent
     environment: {<<: *env, OPSRELAY_ROLE: remediation, OPSRELAY_PUBLIC_URL: "http://remediation:9000/"}
+  verification:
+    <<: *agent
+    environment: {<<: *env, OPSRELAY_ROLE: verification, OPSRELAY_PUBLIC_URL: "http://verification:9000/"}
   communications:
     <<: *agent
     environment: {<<: *env, OPSRELAY_ROLE: communications, OPSRELAY_PUBLIC_URL: "http://communications:9000/"}
@@ -58,5 +61,6 @@ services:
       OPSRELAY_TRIAGE_ENDPOINT: http://triage:9000
       OPSRELAY_DIAGNOSTICS_ENDPOINT: http://diagnostics:9000
       OPSRELAY_REMEDIATION_ENDPOINT: http://remediation:9000
+      OPSRELAY_VERIFICATION_ENDPOINT: http://verification:9000
       OPSRELAY_COMMUNICATIONS_ENDPOINT: http://communications:9000
-    depends_on: [triage, diagnostics, remediation, communications]
+    depends_on: [triage, diagnostics, remediation, verification, communications]

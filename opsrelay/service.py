@@ -4,8 +4,13 @@ import logging
 
 from . import approvals
 from .agents import Invoker, build_coordinator
+from .audit import verify_incident
 from .config import SPECIALISTS, Role, get_settings
+from .contracts import CONTRACTS, COORDINATOR_TOOLS, COORDINATOR_TRANSITIONS, PLATFORM_TRANSITIONS
 from .environment import SCENARIOS, Environment, SimulatedEnvironment, get_environment
+from .lifecycle import ALLOWED_TRANSITIONS, TERMINAL, Status
+from .policy import Facts, get_policy
+from .schemas import RemediationProposal
 from .store import Record, Store, get_store, new_incident_id, now_iso
 
 log = logging.getLogger(__name__)
@@ -74,7 +79,7 @@ class IncidentService:
             raise ValueError("title is required")
         if external_ref:
             for existing in self.store.list_incidents(limit=200):
-                if existing.get("external_ref") == external_ref and existing["status"] != "resolved":
+                if existing.get("external_ref") == external_ref and existing["status"] not in TERMINAL:
                     return {"incident": existing, "report": None, "deduplicated": True}
         created = now_iso()
         incident = {
@@ -85,12 +90,18 @@ class IncidentService:
             "external_ref": external_ref,
             "service": service,
             "severity": None,
-            "status": "open",
+            "status": str(Status.OPEN),
             "created_at": created,
             "updated_at": created,
         }
         self.store.put_incident(incident)
-        self.store.record(incident["id"], f"source:{source}", "incident.opened", incident["title"])
+        self.store.record(
+            incident["id"],
+            f"source:{source}",
+            "incident.created",
+            incident["title"],
+            {"description": description[:500]},
+        )
         report = None
         if run:
             report = self.run_coordinator(incident["id"], new_incident_prompt(incident))
@@ -137,3 +148,50 @@ class IncidentService:
 
     def health(self) -> list[Record]:
         return self.env.health_overview()
+
+    def verify_audit(self, incident_id: str) -> Record:
+        if self.store.get_incident(incident_id) is None:
+            raise KeyError(f"Unknown incident {incident_id}")
+        return verify_incident(self.store, incident_id)
+
+    def dead_letters(self, limit: int = 50) -> list[Record]:
+        return self.store.list_dead_letters(limit)
+
+    def policy(self) -> Record:
+        policy = get_policy()
+        return {"version": policy.version, **policy.doc}
+
+    def test_policy(
+        self, action: str, service: str, parameters: Record | None = None, confidence: float = 0.95
+    ) -> Record:
+        """What the policy engine would decide for a proposal, without recording anything."""
+        info = self.env.service_info(service)
+        proposal = RemediationProposal(
+            incident_id="inc-0000000000",
+            action=action,
+            service=service,
+            parameters=parameters or {},
+            risk="low",
+            rollback_plan="n/a",
+            rationale="policy test",
+        )
+        facts = Facts(
+            service_tier=int(info["tier"]),
+            service_max_replicas=int(info["max_replicas"]),
+            deployed_versions=tuple(d["version"] for d in self.env.deployments(service)),
+            diagnosis_confidence=confidence,
+            proposals_so_far=0,
+        )
+        return get_policy().evaluate(proposal, facts).model_dump()
+
+    @staticmethod
+    def contracts() -> Record:
+        return {
+            "lifecycle": {str(k): sorted(str(t) for t in v) for k, v in ALLOWED_TRANSITIONS.items()},
+            "agents": [c.describe() for c in CONTRACTS.values()],
+            "coordinator": {
+                "tools": sorted(COORDINATOR_TOOLS),
+                "transitions": sorted(f"{a} -> {b}" for a, b in COORDINATOR_TRANSITIONS),
+            },
+            "platform": {"transitions": sorted(f"{a} -> {b}" for a, b in PLATFORM_TRANSITIONS)},
+        }

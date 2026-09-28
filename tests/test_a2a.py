@@ -8,7 +8,7 @@ import httpx
 import pytest
 import uvicorn
 
-from opsrelay.config import SPECIALISTS
+from opsrelay.config import SPECIALISTS, get_settings
 from opsrelay.remote import a2a_invoker
 from opsrelay.runtime.specialist import build_app
 from opsrelay.service import IncidentService
@@ -74,10 +74,12 @@ def test_incident_resolved_across_a2a_agents(specialists):
     responders = {e["actor"] for e in events if e["kind"] == "a2a.response"}
     assert responders == set(SPECIALISTS)
     # Tool calls were made (and audited) inside the specialist servers, not the coordinator.
-    assert any(e["actor"] == "diagnostics" and e["kind"] == "tool.call" for e in events)
+    assert any(e["actor"] == "diagnostics" and e["kind"] == "tool.completed" for e in events)
+    # The audit chain written by six processes' worth of agents is intact.
+    assert service.verify_audit(opened["incident"]["id"])["ok"]
 
 
-def test_unreachable_specialist_is_reported_not_fatal(specialists):
+def test_unreachable_specialist_is_dead_lettered_and_escalated(specialists):
     store = get_store()
     invokers = {role: a2a_invoker(role, url, timeout=5) for role, url in specialists.items()}
     invokers["diagnostics"] = a2a_invoker("diagnostics", f"http://127.0.0.1:{_free_port()}", timeout=2)
@@ -86,5 +88,10 @@ def test_unreachable_specialist_is_reported_not_fatal(specialists):
     opened = service.simulate("bad-deploy")
 
     events = service.get_incident(opened["incident"]["id"])["events"]
-    assert any(e["kind"] == "a2a.error" and "diagnostics" in e["message"] for e in events)
+    retries = [e for e in events if e["kind"] == "agent.retry" and e["data"]["agent"] == "diagnostics"]
+    assert len(retries) == get_settings().agent_max_attempts
+    [letter] = service.dead_letters()
+    assert (letter["agent"], letter["incident_id"]) == ("diagnostics", opened["incident"]["id"])
+    assert any(e["kind"] == "agent.unavailable" for e in events)
     assert opened["incident"]["status"] == "escalated"
+    assert letter["id"] in opened["incident"]["escalation_reason"]
