@@ -94,3 +94,18 @@ def test_remote_cli_payload_shape(monkeypatch):
     assert captured["agentRuntimeArn"] == arn
     assert len(captured["runtimeSessionId"]) >= 33
     assert httpx.Response(200, content=captured["payload"]).json() == {"action": "list_incidents"}
+
+
+def test_cli_url_mode_talks_to_a_running_coordinator(client, monkeypatch, capsys):
+    """`agentmesh --url ...` (used with `agentmesh up`) sends payloads to /invocations."""
+    from agentmesh import cli
+
+    def post(url, json, timeout):
+        assert url == "http://127.0.0.1:8080/invocations"
+        return client.post("/invocations", json=json)
+
+    monkeypatch.setattr("httpx.post", post)
+    assert cli.main(["--url", "http://127.0.0.1:8080/", "simulate", "bad-deploy"]) == 0
+    assert "Waiting for human approval" in capsys.readouterr().out
+    assert cli.main(["--url", "http://127.0.0.1:8080", "approvals"]) == 0
+    assert "rollback_deployment" in capsys.readouterr().out

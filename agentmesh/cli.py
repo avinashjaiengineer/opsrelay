@@ -8,9 +8,11 @@
     agentmesh reject apr-123 --by jane --note "not during peak"
     agentmesh show inc-123                 # incident, approvals and timeline
     agentmesh incidents | health
+    agentmesh up                           # run all five agents locally as A2A/HTTP servers (no Docker)
 
-Add --remote <coordinator runtime ARN> (or set AGENTMESH_COORDINATOR_ARN) to send the same
-command to the deployed coordinator instead of running it in this process.
+By default commands run the agents inside this process. To send them to a running coordinator:
+    --url http://127.0.0.1:8080            # one started with `agentmesh up` (or AGENTMESH_URL)
+    --remote <coordinator runtime ARN>     # the one deployed on AgentCore (or AGENTMESH_COORDINATOR_ARN)
 """
 
 import argparse
@@ -36,6 +38,14 @@ def _remote_call(arn: str, payload: dict[str, Any]) -> dict[str, Any]:
         payload=json.dumps(payload).encode(),
     )
     return json.loads(resp["response"].read())
+
+
+def _http_call(url: str, payload: dict[str, Any]) -> dict[str, Any]:
+    import httpx
+
+    resp = httpx.post(url.rstrip("/") + "/invocations", json=payload, timeout=900)
+    resp.raise_for_status()
+    return resp.json()
 
 
 def _local_call(payload: dict[str, Any]) -> dict[str, Any]:
@@ -74,6 +84,9 @@ def main(argv: list[str] | None = None) -> int:
         prog="agentmesh", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("--remote", default=os.environ.get("AGENTMESH_COORDINATOR_ARN"), help="coordinator runtime ARN")
+    parser.add_argument(
+        "--url", default=os.environ.get("AGENTMESH_URL"), help="coordinator URL, e.g. from `agentmesh up`"
+    )
     parser.add_argument("--json", action="store_true", help="print raw JSON")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
@@ -98,11 +111,25 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("incident_id")
     sub.add_parser("incidents", help="list incidents")
     sub.add_parser("health", help="service health")
+    p = sub.add_parser("up", help="run the coordinator and the four specialists locally over A2A (no Docker)")
+    p.add_argument("--port", type=int, default=8080, help="coordinator port (default 8080)")
+    p.add_argument("--specialist-port", type=int, default=9001, help="first of four specialist ports (default 9001)")
 
     args = parser.parse_args(argv)
 
+    if args.cmd == "up":
+        from .local import run_local_stack
+
+        run_local_stack(port=args.port, specialist_base_port=args.specialist_port)
+        return 0
+
     def call(payload: dict[str, Any]) -> dict[str, Any]:
-        result = _remote_call(args.remote, payload) if args.remote else _local_call(payload)
+        if args.remote:
+            result = _remote_call(args.remote, payload)
+        elif args.url:
+            result = _http_call(args.url, payload)
+        else:
+            result = _local_call(payload)
         if "error" in result:
             print(f"error: {result['error']}", file=sys.stderr)
             sys.exit(1)
@@ -182,7 +209,7 @@ def _demo(call, scenario: str, yes: bool) -> int:  # noqa: ANN001
             "action": "decide_approval",
             "approval_id": a["id"],
             "approve": approve,
-            "approver": os.environ.get("USER", "demo-user"),
+            "approver": os.environ.get("USER") or os.environ.get("USERNAME") or "demo-user",
             "note": None if approve else "rejected in demo",
         }
     )

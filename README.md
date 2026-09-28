@@ -42,38 +42,73 @@ Nothing touches your infrastructure until a person approves it.
 
 Every delegation, tool call, human decision and executed action goes into an append-only audit log, with who did it.
 
-## Quick start (no AWS account needed)
+## Quick start (no AWS account, no Docker)
 
-Offline mode runs the same Strands agents, tools and A2A wiring with a scripted model instead of an LLM.
+You only need Python 3.11 or later. Offline mode runs the same Strands agents, tools and A2A
+wiring with a scripted model instead of an LLM.
 
-```bash
-python -m venv .venv && source .venv/bin/activate      # Windows: .venv\Scripts\activate
+**Windows (PowerShell):**
+
+```powershell
+cd C:\Users\<you>\Documents\agentmesh
+python -m venv .venv
+.venv\Scripts\Activate.ps1
 pip install -e ".[dev]"
-agentmesh demo bad-deploy          # also: memory-leak, traffic-spike
-```
-
-You'll see the agents triage, diagnose and propose a rollback, and you'll be prompted to approve it. After you approve, the agents verify recovery and print the postmortem.
-
-Other commands: `agentmesh simulate <scenario>`, `agentmesh approvals`, `agentmesh approve <id> --by you`, `agentmesh reject <id> --by you --note "..."`, `agentmesh show <incident>`, `agentmesh health`.
-
-### Using Claude on Bedrock locally
-
-```bash
-export AGENTMESH_MODEL_PROVIDER=bedrock
-export AGENTMESH_BEDROCK_MODEL_ID=global.anthropic.claude-opus-5   # see "Model id" below
-export AWS_REGION=us-east-1                                          # plus your usual AWS credentials
 agentmesh demo bad-deploy
 ```
 
-### The full A2A topology with Docker
+If PowerShell refuses to run `Activate.ps1`, run
+`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once, or use `.venv\Scripts\activate.bat` from `cmd`.
+
+**macOS / Linux:**
 
 ```bash
-docker compose up --build
-curl -s localhost:8080/invocations -H 'content-type: application/json' \
-     -d '{"action": "simulate", "scenario": "bad-deploy"}'
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"
+agentmesh demo bad-deploy
 ```
 
-This runs the four specialists as separate A2A servers, the coordinator on port 8080 (the same `/invocations` contract as AgentCore), and DynamoDB Local.
+The demo shows the agents triage, diagnose and propose a rollback, then prompts you to approve
+it. After you approve, the agents verify recovery and print the postmortem. The other scenarios
+are `memory-leak` and `traffic-spike`.
+
+### The full agent-to-agent topology, without Docker
+
+`agentmesh demo` runs every agent in one process. To run them the way AgentCore does, use
+`agentmesh up`: four specialist A2A servers (ports 9001-9004) and the coordinator on port
+8080. The coordinator talks to the specialists over real A2A HTTP calls.
+
+```powershell
+# terminal 1
+agentmesh up
+
+# terminal 2 (activate the venv first)
+agentmesh --url http://127.0.0.1:8080 simulate bad-deploy
+agentmesh --url http://127.0.0.1:8080 approvals
+agentmesh --url http://127.0.0.1:8080 approve apr-xxxxxxxxxx --by you
+agentmesh --url http://127.0.0.1:8080 show inc-xxxxxxxxxx
+```
+
+To avoid repeating `--url`, set the `AGENTMESH_URL` environment variable (PowerShell:
+`$env:AGENTMESH_URL="http://127.0.0.1:8080"`). While it runs, you can open
+http://127.0.0.1:9001/.well-known/agent-card.json in a browser to see an agent's A2A card. If
+port 8080 is taken, use `agentmesh up --port 8090`.
+
+### Using Claude on Bedrock locally
+
+Set these, plus AWS credentials (for example `aws configure`), then run `demo` or `up` as above:
+
+```powershell
+$env:AGENTMESH_MODEL_PROVIDER="bedrock"
+$env:AGENTMESH_BEDROCK_MODEL_ID="global.anthropic.claude-opus-5"   # see "Model id" below
+$env:AGENTMESH_AWS_REGION="us-east-1"
+```
+
+On macOS / Linux, use `export NAME=value` instead of `$env:NAME="value"`.
+
+### Optional: Docker Compose
+
+If you have Docker, `docker compose up --build` runs the same topology in containers with DynamoDB Local.
 
 ## Deploy to Amazon Bedrock AgentCore
 
@@ -82,7 +117,10 @@ This runs the four specialists as separate A2A servers, the coordinator on port 
 - An AWS account.
 - Model access to Claude in Amazon Bedrock.
 - Node.js (for the CDK CLI).
-- Docker with `buildx`. AgentCore runs **linux/arm64** containers; the stack builds for arm64 automatically.
+- Docker with `buildx`, **for deploying only**. `cdk deploy` builds the agents' container
+  image. AgentCore runs **linux/arm64** containers, and the stack builds for arm64 automatically.
+  Without Docker on your machine, run the deploy from a machine or CI runner that has it, such as
+  a GitHub Actions `ubuntu-24.04-arm` runner.
 
 ```bash
 npm install -g aws-cdk
@@ -175,7 +213,7 @@ docs/            ARCHITECTURE.md: design decisions and next steps
 
 ```bash
 pip install -e ".[dev]" aws-cdk-lib constructs
-pytest            # 51 tests, fully offline
+pytest            # 52 tests, fully offline
 ruff check . && ruff format --check .
 ```
 
