@@ -72,6 +72,17 @@ class Settings(BaseSettings):
     worker_poll_seconds: float = 1.0
     recovery_interval_seconds: float = 30
 
+    # Who may call the coordinator API (opsrelay.auth, opsrelay.rbac): "none" (development; the
+    # approver is an unverified name), "dev" (named users with bearer tokens from `dev_users`, a
+    # YAML file path or Secrets Manager reference) or "oidc" (JWTs, e.g. Amazon Cognito).
+    auth_mode: Literal["none", "dev", "oidc"] = "none"
+    dev_users: str = ""
+    oidc_issuer: str = ""  # e.g. https://cognito-idp.us-east-1.amazonaws.com/us-east-1_AbCdEf
+    oidc_audience: str = ""  # the app client id; empty skips the audience check
+    oidc_jwks_url: str = ""  # default: <issuer>/.well-known/jwks.json
+    oidc_roles_claim: str = "cognito:groups"
+    oidc_name_claim: str = "email"
+
     # Shared secret the coordinator presents to specialist A2A servers (Authorization: Bearer),
     # for deployments without SigV4 (local, EC2, Docker Compose). `opsrelay up` generates one per
     # run. May be a Secrets Manager ARN (see opsrelay.secrets).

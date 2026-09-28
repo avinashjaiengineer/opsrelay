@@ -134,7 +134,7 @@ def test_cli_url_mode_talks_to_a_running_coordinator(client, monkeypatch, capsys
     """`opsrelay --url ...` (used with `opsrelay up`) sends payloads to /invocations."""
     from opsrelay import cli
 
-    def post(url, json, timeout):
+    def post(url, json, timeout, headers=None):
         assert url == "http://127.0.0.1:8080/invocations"
         return client.post("/invocations", json=json)
 

@@ -1,5 +1,6 @@
 """Synthesizes the CDK stack (no AWS account or Docker needed) and checks the topology."""
 
+import json
 import sys
 from pathlib import Path
 
@@ -49,6 +50,41 @@ def test_coordinator_may_invoke_specialists(template):
     [coordinator_policy] = [p for name, p in policies.items() if name.startswith("Coordinator")]
     actions = [s["Action"] for s in coordinator_policy["Properties"]["PolicyDocument"]["Statement"]]
     assert actions.count("bedrock-agentcore:InvokeAgentRuntime") == 5
+
+
+def _statements(template, prefix):
+    policies = template.find_resources("AWS::IAM::Policy")
+    [policy] = [p for name, p in policies.items() if name.startswith(prefix)]
+    return policy["Properties"]["PolicyDocument"]["Statement"]
+
+
+def test_bedrock_access_is_scoped_to_the_configured_model(template):
+    for prefix in ("Coordinator", "Triage"):
+        [bedrock] = [s for s in _statements(template, prefix) if "bedrock:InvokeModel" in s["Action"]]
+        resources = json.dumps(bedrock["Resource"])
+        assert "nova-2-lite" in resources
+        assert "foundation-model/*" not in resources and "inference-profile/*" not in resources
+
+
+def _writable(template, prefix):
+    [write] = [s for s in _statements(template, prefix) if "dynamodb:PutItem" in s["Action"]]
+    return write["Condition"]["ForAllValues:StringLike"]["dynamodb:LeadingKeys"]
+
+
+def test_dynamodb_writes_mirror_the_agent_contracts(template):
+    assert _writable(template, "Triage") == ["INC#*"]
+    assert _writable(template, "Communications") == ["INC#*"]
+    assert "APR#*" in _writable(template, "Remediation") and "REC#*" not in _writable(template, "Remediation")
+    assert set(_writable(template, "Coordinator")) == {"INC#*", "APR#*", "REC#*", "SVC#*"}
+    # Nobody gets unconditioned write access to the table.
+    for prefix in ("Coordinator", "Triage", "Diagnostics", "Remediation", "Verification", "Communications"):
+        for s in _statements(template, prefix):
+            actions = s["Action"] if isinstance(s["Action"], list) else [s["Action"]]
+            if any(
+                a in ("dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:BatchWriteItem")
+                for a in actions
+            ):
+                assert "Condition" in s, (prefix, s)
 
 
 def test_state_table(template):

@@ -131,9 +131,20 @@
         <button data-scenario="traffic-spike">Traffic spike<small>inventory-service CPU saturated</small></button>
       </div>
     </section>
-    <section>
-      <h2>You (approver)</h2>
-      <input id="approver" placeholder="your name or email" autocomplete="name">
+    <section id="identity">
+      <h2>You</h2>
+      <div id="signed-in" style="display:none"></div>
+      <div id="signin" style="display:none">
+        <p class="kind">This console requires sign-in. Paste your access token (from your identity provider, or
+          <span class="mono">opsrelay users add</span> in dev mode).</p>
+        <input id="token" type="password" placeholder="access token" autocomplete="off">
+        <div class="actions"><button class="primary" onclick="signIn()">Sign in</button></div>
+      </div>
+      <div id="anonymous" style="display:none">
+        <input id="approver" placeholder="your name or email" autocomplete="name">
+        <p class="kind">Authentication is off, so this name is recorded as <strong>unverified</strong>.
+          Set OPSRELAY_AUTH_MODE to require sign-in.</p>
+      </div>
     </section>
     <section>
       <h2>Service health</h2>
@@ -161,7 +172,10 @@ let selected = null;
 let showTools = false;
 let showAllEvents = false;
 let busy = false;
+let me = null;  // the signed-in principal, from whoami
 const TIMELINE_PREVIEW = 6;
+const tokenKey = "opsrelay.token";
+const getToken = () => { try { return sessionStorage.getItem(tokenKey) || ""; } catch { return ""; } };
 
 const $ = (id) => document.getElementById(id);
 const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
@@ -184,14 +198,42 @@ const time = (iso) => (iso || "").slice(11, 19);
 try { $("approver").value = localStorage.getItem("opsrelay.approver") || ""; } catch {}
 $("approver").addEventListener("input", (e) => { try { localStorage.setItem("opsrelay.approver", e.target.value); } catch {} });
 
+class Unauthorized extends Error {}
+
 async function call(payload) {
-  const resp = await fetch("/invocations", {
-    method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify(payload),
-  });
-  const data = await resp.json();
+  const headers = {"content-type": "application/json"};
+  const token = getToken();
+  if (token) headers.authorization = `Bearer ${token}`;
+  const resp = await fetch("/invocations", {method: "POST", headers, body: JSON.stringify(payload)});
+  const data = await resp.json().catch(() => ({error: `HTTP ${resp.status}`}));
+  if (resp.status === 401) throw new Unauthorized(data.error || "sign-in required");
   if (data.error) throw new Error(data.error);
   return data;
 }
+
+function renderIdentity() {
+  $("signin").style.display = me ? "none" : "block";
+  $("anonymous").style.display = me && !me.verified ? "block" : "none";
+  $("signed-in").style.display = me && me.verified ? "block" : "none";
+  if (me && me.verified) {
+    $("signed-in").innerHTML = `<div><strong>${esc(me.name)}</strong> <span class="chip ok">✓ verified</span></div>
+      <div class="kind">${me.roles.map(esc).join(" · ") || "no roles"} · ${esc(me.method)}</div>
+      <div class="actions"><button onclick="signOut()">Sign out</button></div>`;
+  }
+}
+
+async function loadIdentity() {
+  try { me = (await call({action: "whoami"})).principal; } catch (e) { me = null; }
+  renderIdentity();
+}
+
+window.signIn = async () => {
+  try { sessionStorage.setItem(tokenKey, $("token").value.trim()); } catch {}
+  $("token").value = "";
+  await loadIdentity();
+  if (!me) showError("That token wasn't accepted."); else { showError(""); refresh(); }
+};
+window.signOut = () => { try { sessionStorage.removeItem(tokenKey); } catch {} me = null; renderIdentity(); };
 
 function showError(msg) {
   $("error").textContent = msg || "";
@@ -210,8 +252,8 @@ document.querySelectorAll("[data-scenario]").forEach((btn) => btn.addEventListen
 }));
 
 async function decide(approvalId, approve) {
-  const approver = $("approver").value.trim();
-  if (!approver) { showError("Enter your name under “You (approver)” first; it is recorded in the audit log."); $("approver").focus(); return; }
+  const approver = me && me.verified ? me.name : $("approver").value.trim();
+  if (!approver) { showError("Enter your name under “You” first; it is recorded in the audit log."); $("approver").focus(); return; }
   const note = approve ? null : prompt("Reason for rejecting (optional):") || null;
   try {
     await call({action: "decide_approval", approval_id: approvalId, approve, approver, note, async: true});
@@ -289,7 +331,8 @@ function remediationCard(i, approvals) {
   const p = a.policy || {};
   const params = Object.keys(a.params || {}).length ? Object.entries(a.params).map(([k, v]) => `${esc(k)}=${esc(v)}`).join(", ") : "none";
   const decided = a.decided_by
-    ? `<div class="decision">${chip(a.status)} Decided by <strong>${esc(a.decided_by)}</strong>${a.note ? `: “${esc(a.note)}”` : ""}${a.result ? ` · ${esc(a.result.detail)}` : ""}</div>`
+    ? `<div class="decision">${chip(a.status)} Decided by <strong>${esc(a.decided_by)}</strong>${a.decided_by_role && a.decided_by_role !== "policy" ? ` as ${esc(a.decided_by_role.replaceAll("_", " "))}` : ""}
+        ${a.decided_by.startsWith("policy:") ? "" : a.identity_verified ? '<span class="chip ok">✓ verified</span>' : '<span class="chip warn">unverified</span>'}${a.note ? `: “${esc(a.note)}”` : ""}${a.result ? ` · ${esc(a.result.detail)}` : ""}</div>`
     : "";
   const actions = a.status === "pending" ? `
     <div class="actions">
@@ -383,11 +426,16 @@ async function refresh() {
     }
     $("conn").textContent = "live"; $("conn").className = "chip ok";
   } catch (e) {
-    $("conn").textContent = "disconnected"; $("conn").className = "chip bad";
+    if (e instanceof Unauthorized) {
+      if (me) { me = null; renderIdentity(); }
+      $("conn").textContent = "sign in"; $("conn").className = "chip warn";
+    } else {
+      $("conn").textContent = "disconnected"; $("conn").className = "chip bad";
+    }
   } finally { busy = false; }
 }
 
-refresh();
+loadIdentity().then(refresh);
 setInterval(refresh, 1500);
 </script>
 </body>

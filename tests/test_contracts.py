@@ -5,6 +5,7 @@ import json
 
 import pytest
 
+from opsrelay import resilience
 from opsrelay.agents import factory
 from opsrelay.agents.tools import diagnostics_tools, triage_tools
 from opsrelay.config import SPECIALISTS
@@ -140,21 +141,22 @@ def test_a_lost_reply_is_not_repeated(service):
     assert _kinds(service, iid).count("incident.triaged") == 1
 
 
-def test_circuit_breaker_opens_and_recovers():
-    breaker = CircuitBreaker(failure_threshold=2, recovery_seconds=0.05)
+def test_circuit_breaker_opens_and_recovers(monkeypatch):
+    clock = [1000.0]  # a controlled clock: no real sleeps, no timer-resolution flakiness
+    monkeypatch.setattr(resilience.time, "monotonic", lambda: clock[0])
+    breaker = CircuitBreaker(failure_threshold=2, recovery_seconds=30)
     breaker.record_failure()
     breaker.before_call()  # one failure: still closed
     breaker.record_failure()
     assert breaker.state == "open"
     with pytest.raises(CircuitOpen):
         breaker.before_call()
-    import time
 
-    time.sleep(0.06)
+    clock[0] += 31
     assert breaker.state == "half-open"
     breaker.before_call()
     breaker.record_failure()  # the trial call failed: open again
     assert breaker.state == "open"
-    time.sleep(0.06)
+    clock[0] += 31
     breaker.record_success()
     assert breaker.state == "closed"

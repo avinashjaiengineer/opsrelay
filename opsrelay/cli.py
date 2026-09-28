@@ -13,6 +13,9 @@
     opsrelay policy list                  # the remediation policy in force
     opsrelay policy test scale_service inventory-service --replicas 4
     opsrelay contracts                    # lifecycle states, agent contracts, who may make each move
+    opsrelay whoami                       # who you are to the coordinator, and your roles
+    opsrelay policy propose new.yaml      # then: policy approve v2 (a second admin), policy activate v2
+    opsrelay users add "Jane" --roles sre,incident_commander   # dev-mode users; prints a token once
     opsrelay up                           # run all six agents locally + a dashboard at http://127.0.0.1:8080
 
 By default commands run the agents inside this process. To send them to a running coordinator:
@@ -25,6 +28,7 @@ import json
 import os
 import sys
 import uuid
+from pathlib import Path
 from typing import Any
 
 from .environment import SCENARIOS
@@ -45,12 +49,40 @@ def _remote_call(arn: str, payload: dict[str, Any]) -> dict[str, Any]:
     return json.loads(resp["response"].read())
 
 
-def _http_call(url: str, payload: dict[str, Any]) -> dict[str, Any]:
+def _http_call(url: str, payload: dict[str, Any], token: str | None = None) -> dict[str, Any]:
     import httpx
 
-    resp = httpx.post(url.rstrip("/") + "/invocations", json=payload, timeout=900)
+    headers = {"Authorization": f"Bearer {token}"} if token else {}
+    resp = httpx.post(url.rstrip("/") + "/invocations", json=payload, headers=headers, timeout=900)
+    if resp.status_code in (401, 403):
+        return (
+            resp.json() if resp.headers.get("content-type", "").startswith("application/json") else {"error": resp.text}
+        )
     resp.raise_for_status()
     return resp.json()
+
+
+def _add_user(path: str, name: str, roles: list[str]) -> int:
+    """Create a dev user with a new random token; print the token once, store only its hash."""
+    import secrets as pysecrets
+
+    import yaml
+
+    from .auth import ROLES, token_hash
+
+    unknown = set(roles) - set(ROLES)
+    if unknown:
+        print(f"error: unknown roles {sorted(unknown)}; choose from {', '.join(ROLES)}", file=sys.stderr)
+        return 1
+    file = Path(path)
+    doc = (yaml.safe_load(file.read_text(encoding="utf-8")) if file.exists() else None) or {}
+    users = [u for u in doc.get("users") or [] if u.get("name") != name]
+    token = pysecrets.token_urlsafe(32)
+    users.append({"name": name, "roles": roles, "token_sha256": token_hash(token)})
+    file.write_text(yaml.safe_dump({"users": users}, sort_keys=False), encoding="utf-8")
+    print(f"Added {name} ({', '.join(roles)}) to {path}.")
+    print(f"Token (shown once; give it to {name}, it isn't stored): {token}")
+    return 0
 
 
 def _local_call(payload: dict[str, Any]) -> dict[str, Any]:
@@ -94,6 +126,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--url", default=os.environ.get("OPSRELAY_URL"), help="coordinator URL, e.g. from `opsrelay up`"
     )
+    parser.add_argument(
+        "--token",
+        default=os.environ.get("OPSRELAY_TOKEN"),
+        help="bearer token for a coordinator with authentication on (or OPSRELAY_TOKEN)",
+    )
     parser.add_argument("--json", action="store_true", help="print raw JSON")
     sub = parser.add_subparsers(dest="cmd", required=True)
 
@@ -112,7 +149,7 @@ def main(argv: list[str] | None = None) -> int:
     for name in ("approve", "reject"):
         p = sub.add_parser(name, help=f"{name} a proposed action")
         p.add_argument("approval_id")
-        p.add_argument("--by", required=True, help="who is deciding (recorded in the audit log)")
+        p.add_argument("--by", help="who is deciding (needed only with authentication off; else it's you)")
         p.add_argument("--note")
     p = sub.add_parser("show", help="show an incident and its timeline")
     p.add_argument("incident_id")
@@ -124,6 +161,22 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("policy", help="show or test the remediation policy")
     policy_sub = p.add_subparsers(dest="policy_cmd", required=True)
     policy_sub.add_parser("list", help="show the policy in force")
+    policy_sub.add_parser("history", help="policy versions: proposed, approved, active, superseded")
+    p = policy_sub.add_parser("propose", help="propose a new policy version from a YAML file")
+    p.add_argument("file")
+    p.add_argument("--note", default="")
+    p.add_argument("--by", help="needed only with authentication off")
+    for name, help_text in (
+        ("approve", "approve a proposed version (not your own)"),
+        ("reject", "reject a proposed version"),
+    ):
+        p = policy_sub.add_parser(name, help=help_text)
+        p.add_argument("version")
+        p.add_argument("--note", default="")
+        p.add_argument("--by", help="needed only with authentication off")
+    p = policy_sub.add_parser("activate", help="put an approved version in force")
+    p.add_argument("version")
+    p.add_argument("--by", help="needed only with authentication off")
     p = policy_sub.add_parser("test", help="the decision for a proposal, without recording anything")
     p.add_argument("action_name", metavar="ACTION")
     p.add_argument("service")
@@ -131,6 +184,13 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--target-version")
     p.add_argument("--confidence", type=float, default=0.95, help="diagnosis confidence (default 0.95)")
     sub.add_parser("contracts", help="lifecycle states, agent contracts and who may make each move")
+    sub.add_parser("whoami", help="who the coordinator thinks you are, and your roles")
+    p = sub.add_parser("users", help="manage dev-mode users (OPSRELAY_AUTH_MODE=dev)")
+    users_sub = p.add_subparsers(dest="users_cmd", required=True)
+    p = users_sub.add_parser("add", help="add a user with a new token (printed once)")
+    p.add_argument("name")
+    p.add_argument("--roles", required=True, help="comma-separated, e.g. sre,incident_commander")
+    p.add_argument("--file", default=os.environ.get("OPSRELAY_DEV_USERS") or "users.yaml")
     p = sub.add_parser("up", help="run the coordinator and the five specialists locally over A2A (no Docker)")
     p.add_argument("--port", type=int, default=8080, help="coordinator port (default 8080)")
     p.add_argument(
@@ -154,11 +214,14 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
 
+    if args.cmd == "users":
+        return _add_user(args.file, args.name, [r.strip() for r in args.roles.split(",") if r.strip()])
+
     def call(payload: dict[str, Any]) -> dict[str, Any]:
         if args.remote:
             result = _remote_call(args.remote, payload)
         elif args.url:
-            result = _http_call(args.url, payload)
+            result = _http_call(args.url, payload, args.token)
         else:
             result = _local_call(payload)
         if "error" in result:
@@ -189,6 +252,8 @@ def main(argv: list[str] | None = None) -> int:
             "approver": args.by,
             "note": args.note,
         }
+    elif args.cmd == "whoami":
+        payload = {"action": "whoami"}
     elif args.cmd == "show":
         payload = {"action": "get_incident", "incident_id": args.incident_id}
     elif args.cmd == "incidents":
@@ -199,6 +264,25 @@ def main(argv: list[str] | None = None) -> int:
         payload = {"action": "list_dead_letters"}
     elif args.cmd == "policy" and args.policy_cmd == "list":
         payload = {"action": "get_policy"}
+    elif args.cmd == "policy" and args.policy_cmd == "history":
+        payload = {"action": "list_policies"}
+    elif args.cmd == "policy" and args.policy_cmd == "propose":
+        payload = {
+            "action": "propose_policy",
+            "text": Path(args.file).read_text(encoding="utf-8"),
+            "note": args.note,
+            "by": args.by,
+        }
+    elif args.cmd == "policy" and args.policy_cmd in ("approve", "reject"):
+        payload = {
+            "action": "review_policy",
+            "version": args.version,
+            "approve": args.policy_cmd == "approve",
+            "note": args.note,
+            "by": args.by,
+        }
+    elif args.cmd == "policy" and args.policy_cmd == "activate":
+        payload = {"action": "activate_policy", "version": args.version, "by": args.by}
     elif args.cmd == "policy":
         parameters: dict[str, Any] = {}
         if args.replicas is not None:
@@ -220,6 +304,19 @@ def main(argv: list[str] | None = None) -> int:
     result = call(payload)
     if args.json or args.cmd in ("contracts",) or (args.cmd == "policy" and args.policy_cmd == "list"):
         print(json.dumps(result, indent=2, default=str))
+    elif args.cmd == "whoami":
+        who = result["principal"]
+        verified = "verified" if who["verified"] else "NOT verified"
+        print(f"{who['name']}  roles: {', '.join(who['roles'])}  ({who['method']}, {verified})")
+    elif args.cmd == "policy" and args.policy_cmd == "history":
+        for v in result["policies"] or []:
+            reviewer = v.get("reviewed_by") or "-"
+            print(f"{v['id']:<5} {v['status']:<11} by {v['author']}  reviewed by {reviewer}  {v.get('note') or ''}")
+        if not result["policies"]:
+            print("No stored versions; the file policy is in force.")
+    elif args.cmd == "policy" and args.policy_cmd != "test":
+        v = result["policy"]
+        print(f"{v['id']}: {v['status']}")
     elif args.cmd == "audit":
         if result["ok"]:
             print(

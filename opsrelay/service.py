@@ -108,9 +108,26 @@ class IncidentService:
         return {"incident": self.store.get_incident(incident["id"]), "report": report}
 
     def decide_approval(
-        self, approval_id: str, *, approve: bool, approver: str, note: str | None = None, run: bool = True
+        self,
+        approval_id: str,
+        *,
+        approve: bool,
+        approver: str,
+        note: str | None = None,
+        run: bool = True,
+        role: str | None = None,
+        verified: bool = False,
     ) -> Record:
-        approval = approvals.decide(self.store, self.env, approval_id, approve=approve, approver=approver, note=note)
+        approval = approvals.decide(
+            self.store,
+            self.env,
+            approval_id,
+            approve=approve,
+            approver=approver,
+            note=note,
+            role=role,
+            verified=verified,
+        )
         report = None
         if run:
             report = self.run_coordinator(approval["incident_id"], decision_prompt(approval))
@@ -150,7 +167,7 @@ class IncidentService:
         return self.env.health_overview()
 
     def verify_audit(self, incident_id: str) -> Record:
-        if self.store.get_incident(incident_id) is None:
+        if incident_id != "policy" and self.store.get_incident(incident_id) is None:
             raise KeyError(f"Unknown incident {incident_id}")
         return verify_incident(self.store, incident_id)
 
@@ -159,7 +176,7 @@ class IncidentService:
 
     def policy(self) -> Record:
         policy = get_policy(self.store)
-        return {"version": policy.version, **policy.doc}
+        return {**policy.doc, "version": policy.version}
 
     def test_policy(
         self, action: str, service: str, parameters: Record | None = None, confidence: float = 0.95

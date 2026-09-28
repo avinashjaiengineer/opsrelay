@@ -19,6 +19,35 @@ from constructs import Construct
 ROOT = Path(__file__).resolve().parent.parent
 SPECIALISTS = ("triage", "diagnostics", "remediation", "verification", "communications")
 
+# Least privilege: which item prefixes each runtime may write (dynamodb:LeadingKeys). Every runtime
+# may read the table; writes mirror the agent contracts. Specialists write only their incident's
+# items (results and audit events); remediation also writes approvals, executions and services,
+# because an action the policy allows without a person runs inside its proposal; only the
+# coordinator writes jobs, dead letters and policy versions.
+INCIDENT_KEYS = ["INC#*"]
+WRITABLE_KEYS = {
+    "coordinator": ["INC#*", "APR#*", "REC#*", "SVC#*"],
+    "triage": INCIDENT_KEYS,
+    "diagnostics": INCIDENT_KEYS,
+    "remediation": ["INC#*", "APR#*", "REC#execution#*", "SVC#*"],
+    "verification": INCIDENT_KEYS,
+    "communications": INCIDENT_KEYS,
+}
+CROSS_REGION_PREFIXES = ("global.", "us.", "eu.", "apac.", "jp.", "au.", "ca.")
+
+
+def model_resources(model_id: str, region: str, account: str) -> list[str]:
+    """Only the configured model: its inference profile, and the foundation model it routes to."""
+    prefix = next((p for p in CROSS_REGION_PREFIXES if model_id.startswith(p)), None)
+    if prefix is None:
+        return [f"arn:aws:bedrock:{region}::foundation-model/{model_id}"]
+    base = model_id[len(prefix) :]
+    return [
+        f"arn:aws:bedrock:{region}:{account}:inference-profile/{model_id}",
+        f"arn:aws:bedrock:*::foundation-model/{base}",  # the regions the profile routes to
+        f"arn:aws:bedrock:::foundation-model/{base}",  # global profiles
+    ]
+
 
 class OpsRelayStack(Stack):
     def __init__(self, scope: Construct, construct_id: str, **kwargs) -> None:  # noqa: ANN003
@@ -61,14 +90,12 @@ class OpsRelayStack(Stack):
             "OPSRELAY_MODEL_PROVIDER": model_provider,
             "OPSRELAY_BEDROCK_MODEL_ID": model_id,
         }
+        for key in ("auth_mode", "oidc_issuer", "oidc_audience", "dev_users"):
+            if ctx(key):
+                common_env[f"OPSRELAY_{key.upper()}"] = str(ctx(key))
         model_access = iam.PolicyStatement(
             actions=["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"],
-            resources=[
-                "arn:aws:bedrock:*::foundation-model/*",
-                "arn:aws:bedrock:::foundation-model/*",  # global cross-region inference
-                f"arn:aws:bedrock:*:{self.account}:inference-profile/*",
-                "arn:aws:bedrock:*:*:inference-profile/global.*",
-            ],
+            resources=model_resources(model_id, self.region, self.account),
         )
 
         def runtime(role: str, protocol: agentcore.ProtocolType, extra_env: dict[str, str]) -> agentcore.Runtime:
@@ -82,7 +109,14 @@ class OpsRelayStack(Stack):
                 environment_variables={**common_env, "OPSRELAY_ROLE": role, **extra_env},
                 tracing_enabled=True,
             )
-            table.grant_read_write_data(rt.role)
+            table.grant_read_data(rt.role)
+            rt.role.add_to_principal_policy(
+                iam.PolicyStatement(
+                    actions=["dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:ConditionCheckItem"],
+                    resources=[table.table_arn],
+                    conditions={"ForAllValues:StringLike": {"dynamodb:LeadingKeys": WRITABLE_KEYS[role]}},
+                )
+            )
             rt.role.add_to_principal_policy(model_access)
             return rt
 
@@ -98,6 +132,13 @@ class OpsRelayStack(Stack):
         )
         for rt in specialists.values():
             rt.grant_invoke_runtime(coordinator.role)
+        # Secrets (e.g. the dev users file) live under opsrelay/ in Secrets Manager.
+        coordinator.role.add_to_principal_policy(
+            iam.PolicyStatement(
+                actions=["secretsmanager:GetSecretValue"],
+                resources=[f"arn:aws:secretsmanager:{self.region}:{self.account}:secret:opsrelay/*"],
+            )
+        )
 
         CfnOutput(self, "CoordinatorRuntimeArn", value=coordinator.agent_runtime_arn)
         CfnOutput(self, "TableName", value=table.table_name)

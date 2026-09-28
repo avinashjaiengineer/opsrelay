@@ -14,6 +14,13 @@ Payloads are JSON objects with an "action":
     {"action": "get_policy"}                                  # the loaded remediation policy
     {"action": "test_policy", "action_name": "scale_service", "service": "...", "parameters": {"replicas": 4}}
     {"action": "get_contracts"}                               # lifecycle, agent contracts, transition owners
+    {"action": "whoami"}                                      # the authenticated caller and roles
+    {"action": "list_policies"} / {"action": "propose_policy", "text": "<yaml>"}
+    {"action": "review_policy", "version": "v2", "approve": true} / {"action": "activate_policy", "version": "v2"}
+
+Callers are authenticated per OPSRELAY_AUTH_MODE (opsrelay.auth) and every action is authorized by
+role (opsrelay.rbac). With authentication on, a decision's approver is the caller, never a name in
+the payload.
 
 Add "async": true to open_incident, simulate or decide_approval to return at once: the work is
 queued as a durable job (opsrelay.jobs) and a worker runs it (the runtime reports HealthyBusy
@@ -27,13 +34,14 @@ from typing import Any
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 from pydantic import ValidationError
 
-from .. import jobs
+from .. import auth, jobs, policy_admin, rbac
 from ..approvals import ApprovalError
 from ..lifecycle import IllegalTransition
 from ..service import IncidentService, decision_prompt, new_incident_prompt
 
 log = logging.getLogger(__name__)
 app = BedrockAgentCoreApp()
+app.add_middleware(auth.AuthMiddleware)  # OPSRELAY_AUTH_MODE decides whether it requires a token
 
 _service: IncidentService | None = None
 _service_lock = threading.Lock()
@@ -68,10 +76,23 @@ def _in_background(incident_id: str, prompt: str) -> None:
     start_worker()
 
 
+def _actor(principal: auth.Principal, payload: dict[str, Any], field: str) -> str:
+    """Who is acting: the authenticated principal, or (with auth off) the name given in `field`."""
+    if principal.verified:
+        return principal.name
+    _require(payload, field)
+    return payload[field]
+
+
 def handle(payload: dict[str, Any]) -> dict[str, Any]:
     svc = service()
     action = payload.get("action")
     background = bool(payload.get("async"))
+    principal = auth.current()
+    rbac.authorize(principal, str(action))
+
+    if action == "whoami":
+        return {"principal": principal.public()}
 
     if action == "open_incident":
         _require(payload, "title")
@@ -100,14 +121,25 @@ def handle(payload: dict[str, Any]) -> dict[str, Any]:
         return svc.simulate(payload["scenario"])
 
     if action == "decide_approval":
-        _require(payload, "approval_id", "approver")
+        _require(payload, "approval_id")
         if "approve" not in payload:
             raise ValueError("missing field: approve (true or false)")
+        approval = svc.store.get_approval(payload["approval_id"])
+        if approval is None:
+            raise KeyError(f"Unknown approval {payload['approval_id']}")
+        role = None
+        if principal.verified:
+            incident = svc.store.get_incident(approval["incident_id"]) or {}
+            role = rbac.authorize_decision(
+                principal, approval["risk"], approval.get("severity") or incident.get("severity")
+            )
         kwargs = {
             "approval_id": payload["approval_id"],
             "approve": bool(payload["approve"]),
-            "approver": payload["approver"],
+            "approver": _actor(principal, payload, "approver"),
             "note": payload.get("note"),
+            "role": role,
+            "verified": principal.verified,
         }
         if background:
             decided = svc.decide_approval(**kwargs, run=False)
@@ -144,6 +176,28 @@ def handle(payload: dict[str, Any]) -> dict[str, Any]:
         }
     if action == "get_contracts":
         return svc.contracts()
+    if action == "list_policies":
+        return {"policies": policy_admin.history(svc.store)}
+    if action == "propose_policy":
+        _require(payload, "text")
+        return {
+            "policy": policy_admin.propose(
+                svc.store, payload["text"], _actor(principal, payload, "by"), payload.get("note", "")
+            )
+        }
+    if action == "review_policy":
+        _require(payload, "version")
+        if "approve" not in payload:
+            raise ValueError("missing field: approve (true or false)")
+        reviewer = _actor(principal, payload, "by")
+        return {
+            "policy": policy_admin.review(
+                svc.store, payload["version"], reviewer, bool(payload["approve"]), payload.get("note", "")
+            )
+        }
+    if action == "activate_policy":
+        _require(payload, "version")
+        return {"policy": policy_admin.activate(svc.store, payload["version"], _actor(principal, payload, "by"))}
     raise ValueError(f"unknown action '{action}'")
 
 
@@ -153,6 +207,8 @@ def invoke(payload: dict[str, Any]) -> dict[str, Any]:
         return {"error": "payload must be a JSON object"}
     try:
         return handle(payload)
+    except rbac.Forbidden as e:
+        return {"error": f"forbidden: {e}"}
     except (ValueError, KeyError, ApprovalError, IllegalTransition, ValidationError) as e:
         return {"error": str(e).strip("'\"")}
 

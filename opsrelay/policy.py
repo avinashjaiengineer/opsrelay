@@ -119,15 +119,23 @@ class Policy:
         )
 
 
-def load_policy(path: str | None = None) -> Policy:
-    text = Path(path).read_text(encoding="utf-8") if path else files("opsrelay").joinpath("policies.yaml").read_text()
+def parse_policy(text: str, label: str | None = None) -> Policy:
+    """Validate policy YAML and build a Policy. `label` names a stored version (e.g. "v3")."""
     doc = yaml.safe_load(text) or {}
-    if not isinstance(doc.get("actions"), dict):
-        raise ValueError("policy file must have an 'actions' mapping")
+    if not isinstance(doc, dict) or not isinstance(doc.get("actions"), dict):
+        raise ValueError("a policy must have an 'actions' mapping")
     for name, rule in doc["actions"].items():
+        if not isinstance(rule, dict):
+            raise ValueError(f"policy for {name} must be a mapping")
         if rule.get("risk", "high") not in RISK_ORDER:
             raise ValueError(f"policy for {name}: risk must be one of {RISK_ORDER}")
-    return Policy(doc=doc, version=f"v{doc.get('version', 1)}-{hashlib.sha256(text.encode()).hexdigest()[:8]}")
+    digest = hashlib.sha256(text.encode()).hexdigest()[:8]
+    return Policy(doc=doc, version=f"{label or 'v' + str(doc.get('version', 1))}-{digest}")
+
+
+def load_policy(path: str | None = None) -> Policy:
+    text = Path(path).read_text(encoding="utf-8") if path else files("opsrelay").joinpath("policies.yaml").read_text()
+    return parse_policy(text)
 
 
 @lru_cache
@@ -135,8 +143,24 @@ def _file_policy() -> Policy:
     return load_policy(get_settings().policy_file or None)
 
 
-def get_policy(store: Any = None) -> Policy:  # noqa: ARG001 - the store holds versioned policies (see policy_admin)
+@lru_cache(maxsize=16)
+def _stored_policy(record_id: str, rev: int, text: str) -> Policy:  # noqa: ARG001 - rev keys the cache
+    return parse_policy(text, label=record_id)
+
+
+def get_policy(store: Any = None) -> Policy:
+    """The policy in force: the active stored version (see opsrelay.policy_admin), or, if none has
+    been activated, the file (OPSRELAY_POLICY_FILE, or the built-in policies.yaml)."""
+    if store is not None:
+        active = store.list_records("policy", status="active", limit=1)
+        if active:
+            return _stored_policy(active[0]["id"], active[0]["rev"], active[0]["text"])
     return _file_policy()
 
 
-get_policy.cache_clear = _file_policy.cache_clear  # type: ignore[attr-defined]
+def _clear() -> None:
+    _file_policy.cache_clear()
+    _stored_policy.cache_clear()
+
+
+get_policy.cache_clear = _clear  # type: ignore[attr-defined]
