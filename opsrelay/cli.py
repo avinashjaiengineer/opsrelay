@@ -245,6 +245,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("name")
     p.add_argument("--roles", required=True, help="comma-separated, e.g. sre,incident_commander")
     p.add_argument("--file", default=os.environ.get("OPSRELAY_DEV_USERS") or "users.yaml")
+    p = sub.add_parser("migrate", help="copy a SQLite store into DynamoDB (audit chains stay verifiable)")
+    p.add_argument("--from", dest="source", required=True, help="the SQLite file, e.g. opsrelay.db")
+    p.add_argument("--to-table", required=True, help="the DynamoDB table (created if missing)")
+    p.add_argument("--region", default=os.environ.get("AWS_REGION", "us-east-1"))
     p = sub.add_parser("up", help="run the coordinator and the five specialists locally over A2A (no Docker)")
     p.add_argument("--port", type=int, default=8080, help="coordinator port (default 8080)")
     p.add_argument(
@@ -267,6 +271,9 @@ def main(argv: list[str] | None = None) -> int:
             open_browser=not args.no_browser,
         )
         return 0
+
+    if args.cmd == "migrate":
+        return _migrate(args.source, args.to_table, args.region)
 
     if args.cmd == "users":
         return _add_user(args.file, args.name, [r.strip() for r in args.roles.split(",") if r.strip()])
@@ -460,6 +467,27 @@ def main(argv: list[str] | None = None) -> int:
         if inc_id:
             _print_incident(call({"action": "get_incident", "incident_id": inc_id}))
     return 0
+
+
+def _migrate(source: str, table: str, region: str) -> int:
+    import boto3
+
+    from .store.dynamodb import DynamoStore
+    from .store.migrate import migrate
+    from .store.sqlite import SqliteStore
+
+    if not Path(source).exists():
+        print(f"error: {source} does not exist", file=sys.stderr)
+        return 1
+    client = boto3.client("dynamodb", region_name=region)
+    try:
+        client.describe_table(TableName=table)
+    except client.exceptions.ResourceNotFoundException:
+        print(f"Creating table {table}...")
+        DynamoStore.create_table(table, region)
+    result = migrate(SqliteStore(source), DynamoStore(table, region))
+    print(json.dumps(result, indent=2))
+    return 0 if not result["mismatched"] else 2
 
 
 def _eval(args: argparse.Namespace) -> int:
