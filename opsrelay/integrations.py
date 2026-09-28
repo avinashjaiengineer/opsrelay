@@ -12,8 +12,10 @@ Each notification is created once, as a `notification` record whose id names the
 event and the channel, so a rerun never sends it twice. A `notify` job (opsrelay.jobs) delivers it:
 retried on failure, dead-lettered (without escalating the incident) if it keeps failing.
 
-Slack buttons post to /integrations/slack/actions. The request's Slack signature is verified, the
-Slack user is mapped to an OpsRelay user (OPSRELAY_SLACK_USERS, or `slack_id` in the dev users
+Slack button clicks arrive either at /integrations/slack/actions (the request's Slack signature is
+verified) or, with OPSRELAY_SLACK_APP_TOKEN, over a Socket Mode connection OpsRelay opens to Slack
+(authenticated by the app token; no public URL needed). Either way the Slack user is mapped to an
+OpsRelay user (OPSRELAY_SLACK_USERS, or `slack_id` in the dev users
 file), and the decision is authorized by role exactly like one made in the dashboard.
 """
 
@@ -389,6 +391,34 @@ def respond_in_slack(response_url: str, text: str) -> None:
         httpx.post(response_url, json={"replace_original": True, "text": text}, timeout=TIMEOUT)
     except httpx.HTTPError:
         log.exception("could not update the Slack message")
+
+
+class SlackSocket:
+    """Socket Mode: receives Slack interactions over a WebSocket this process opens (slack_sdk)."""
+
+    def __init__(self, app_token: str, on_click):  # noqa: ANN001
+        self.app_token = app_token
+        self.on_click = on_click
+        self.client = None
+
+    def start(self) -> "SlackSocket":
+        from slack_sdk.socket_mode import SocketModeClient
+
+        self.client = SocketModeClient(app_token=self.app_token, logger=log)
+        self.client.socket_mode_request_listeners.append(self.handle)
+        self.client.connect()
+        log.info("Slack Socket Mode connected")
+        return self
+
+    def handle(self, client, request) -> None:  # noqa: ANN001
+        from slack_sdk.socket_mode.response import SocketModeResponse
+
+        client.send_socket_mode_response(SocketModeResponse(envelope_id=request.envelope_id))  # ack within 3 s
+        payload = request.payload if isinstance(request.payload, dict) else {}
+        if request.type == "interactive" and payload.get("type") == "block_actions":
+            import threading
+
+            threading.Thread(target=self.on_click, args=(payload,), name="slack-action", daemon=True).start()
 
 
 def parse_slack_form(body: bytes) -> Record:

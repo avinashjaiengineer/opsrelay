@@ -224,3 +224,23 @@ def test_secret_references_can_name_a_key(monkeypatch):
     assert secrets.resolve("secretsmanager:other") == "plain"
     with pytest.raises(KeyError, match="no key 'missing'"):
         secrets.resolve("secretsmanager:opsrelay/#missing")
+
+
+def test_socket_mode_acks_and_applies_button_clicks():
+    import threading
+    from types import SimpleNamespace
+
+    clicked = threading.Event()
+    seen = []
+
+    def on_click(payload):
+        seen.append(payload)
+        clicked.set()
+
+    acks = []
+    client = SimpleNamespace(send_socket_mode_response=lambda response: acks.append(response.envelope_id))
+    socket = integrations.SlackSocket("xapp-test", on_click)
+    socket.handle(client, SimpleNamespace(type="interactive", envelope_id="e1", payload=_click("apr-1", "U_SRE")))
+    socket.handle(client, SimpleNamespace(type="events_api", envelope_id="e2", payload={"type": "event_callback"}))
+    assert acks == ["e1", "e2"]  # every envelope is acknowledged
+    assert clicked.wait(2) and seen[0]["actions"][0]["value"] == "apr-1" and len(seen) == 1

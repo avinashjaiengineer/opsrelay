@@ -117,7 +117,10 @@ class Settings(BaseSettings):
     origin_secret: str = ""
     slack_bot_token: str = ""  # xoxb-...; needs chat:write
     slack_channel: str = ""  # channel id, e.g. C0123456789
-    slack_signing_secret: str = ""  # verifies Approve/Reject button clicks
+    slack_signing_secret: str = ""  # verifies Approve/Reject button clicks sent to our HTTPS endpoint
+    # Or Socket Mode: an App-Level Token (xapp-..., scope connections:write). OpsRelay then opens the
+    # connection to Slack itself, so button clicks need no public URL and no signing secret.
+    slack_app_token: str = ""
     slack_users: str = ""  # YAML (file or secret): Slack user id -> OpsRelay name and roles
     teams_webhook_url: str = ""  # a Teams Workflows / incoming webhook URL
     pagerduty_routing_key: str = ""  # Events API v2 integration key

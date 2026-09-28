@@ -20,7 +20,8 @@ dependencies = [
 
 [project.optional-dependencies]
 otel = ["opentelemetry-exporter-otlp-proto-http>=1.30"]
-dev = ["pytest>=8", "ruff>=0.8", "moto[dynamodb]>=5"]
+slack = ["slack_sdk>=3.33"]  # Slack Socket Mode (OPSRELAY_SLACK_APP_TOKEN)
+dev = ["pytest>=8", "ruff>=0.8", "moto[dynamodb]>=5", "slack_sdk>=3.33"]
 
 [project.scripts]
 opsrelay = "opsrelay.cli:main"

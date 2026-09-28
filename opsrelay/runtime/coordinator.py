@@ -79,15 +79,21 @@ def _require(payload: dict[str, Any], *keys: str) -> None:
 
 
 _intake: SqsIntake | None = None
+_slack_socket: "integrations.SlackSocket | None" = None
 
 
 def start_worker():  # noqa: ANN201
     """Start this process's job worker (reporting HealthyBusy to AgentCore while a job runs), and,
     with OPSRELAY_INTAKE_QUEUE_URL set, its SQS alert consumer."""
-    global _intake
+    global _intake, _slack_socket
     settings = get_settings()
     if settings.intake_queue_url and _intake is None:
         _intake = SqsIntake(settings.intake_queue_url, service, region=settings.aws_region).start()
+    if settings.slack_app_token and _slack_socket is None:
+        try:
+            _slack_socket = integrations.SlackSocket(secrets.resolve(settings.slack_app_token), _slack_click).start()
+        except Exception:  # noqa: BLE001 - Slack being down must not stop the coordinator
+            log.exception("could not connect to Slack in Socket Mode")
     if settings.job_queue_url:
         return None  # jobs arrive through SQS and the run_job action; no polling thread needed
     return jobs.ensure_worker(

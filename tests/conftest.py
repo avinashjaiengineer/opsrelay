@@ -41,6 +41,7 @@ def _settings(monkeypatch, tmp_path):
         "SLACK_CHANNEL",
         "SLACK_SIGNING_SECRET",
         "SLACK_USERS",
+        "SLACK_APP_TOKEN",
         "TEAMS_WEBHOOK_URL",
         "PAGERDUTY_ROUTING_KEY",
         "JIRA_URL",
