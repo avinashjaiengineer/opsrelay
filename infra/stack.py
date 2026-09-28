@@ -26,7 +26,7 @@ class OpsRelayStack(Stack):
 
         ctx = self.node.try_get_context
         model_provider = ctx("model_provider") or "bedrock"
-        model_id = ctx("model_id") or "global.anthropic.claude-opus-5"
+        model_id = ctx("model_id") or "global.amazon.nova-2-lite-v1:0"
         auto_approve_risk = ctx("auto_approve_risk") or "none"
         retain_data = str(ctx("retain_data") or "true").lower() == "true"
 

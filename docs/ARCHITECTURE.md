@@ -7,7 +7,7 @@
 | Coordinator agent | AgentCore Runtime, HTTP protocol (`POST /invocations`, port 8080) | Strands `Agent` + `BedrockAgentCoreApp` |
 | Triage, diagnostics, remediation, communications agents | One AgentCore Runtime each, A2A protocol (JSON-RPC at `/`, port 9000) | Strands `Agent` + `StrandsA2AExecutor` + `build_a2a_app` |
 | Shared state | DynamoDB single table | `opsrelay/store/dynamodb.py` |
-| Model | Claude on Amazon Bedrock | Strands `BedrockModel` |
+| Model | Amazon Nova (default) or Claude on Amazon Bedrock | Strands `BedrockModel` |
 
 All five runtimes use one container image. `OPSRELAY_ROLE` selects the agent.
 

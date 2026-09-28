@@ -15,12 +15,13 @@ class Settings(BaseSettings):
     # Which agent this process runs when started with `python -m opsrelay.runtime`.
     role: Role = "coordinator"
 
-    # "bedrock" runs agents on Claude through Amazon Bedrock.
+    # "bedrock" runs agents on a model in Amazon Bedrock (Amazon Nova by default, or Claude).
     # "offline" runs deterministic scripted agents: no AWS account needed (demo, tests, CI).
     model_provider: Literal["bedrock", "offline"] = "offline"
-    # Bedrock model or inference-profile id. Check the id enabled in your account under
-    # Bedrock > Model catalog; cross-region inference profiles start with "global." or "us.".
-    bedrock_model_id: str = "global.anthropic.claude-opus-5"
+    # Bedrock model or inference-profile id. Any Converse model with tool use works. Amazon Nova
+    # needs no AWS Marketplace subscription; Claude does (e.g. "global.anthropic.claude-opus-5").
+    # Cross-region inference profiles start with "global." or "us.".
+    bedrock_model_id: str = "global.amazon.nova-2-lite-v1:0"
     aws_region: str = "us-east-1"
     max_tokens: int = 16000
 

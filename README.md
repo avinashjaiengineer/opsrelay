@@ -107,13 +107,13 @@ opsrelay approve apr-xxxxxxxxxx --by you
 opsrelay show inc-xxxxxxxxxx
 ```
 
-### Using Claude on Bedrock locally
+### Using a real model on Bedrock locally
 
 Set these, plus AWS credentials (for example `aws configure`), then run `demo` or `up` as above:
 
 ```powershell
 $env:OPSRELAY_MODEL_PROVIDER="bedrock"
-$env:OPSRELAY_BEDROCK_MODEL_ID="global.anthropic.claude-opus-5"   # see "Model id" below
+$env:OPSRELAY_BEDROCK_MODEL_ID="global.amazon.nova-2-lite-v1:0"   # see "Model id" below
 $env:OPSRELAY_AWS_REGION="us-east-1"
 ```
 
@@ -128,7 +128,7 @@ If you have Docker, `docker compose up --build` runs the same topology in contai
 **Prerequisites:**
 
 - An AWS account.
-- Model access to Claude in Amazon Bedrock.
+- Access to a tool-use model in Amazon Bedrock (Amazon Nova by default; see "Model id" below).
 - Node.js (for the CDK CLI).
 - Docker with `buildx`, **for deploying only**. `cdk deploy` builds the agents' container
   image. AgentCore runs **linux/arm64** containers, and the stack builds for arm64 automatically.
@@ -165,13 +165,18 @@ opsrelay approve apr-xxxxxxxxxx --by you@company.com
 
 Or call it directly with the AWS SDK: `bedrock-agentcore` → `InvokeAgentRuntime` with a JSON payload (see `opsrelay/runtime/coordinator.py` for every action). Add `"async": true` to return immediately and poll with `get_incident`.
 
-**Model id.** Bedrock model and inference-profile ids vary by account and region. The default is `global.anthropic.claude-opus-5`. Check what your account has with:
+**Model id.** Any Bedrock model that supports tool use through the Converse API works. The
+default is Amazon Nova 2 Lite (`global.amazon.nova-2-lite-v1:0`): Amazon's own models need no
+AWS Marketplace subscription, so they work on accounts without a card set up for Marketplace.
+Claude (for example `global.anthropic.claude-opus-5`) works too, but needs Anthropic's one-time
+use case form and a Marketplace subscription with a valid payment method. Ids vary by account and region; list what your account has with:
 
 ```bash
-aws bedrock list-inference-profiles --query "inferenceProfileSummaries[?contains(inferenceProfileId, 'claude')].inferenceProfileId"
+aws bedrock list-inference-profiles --query "inferenceProfileSummaries[?contains(inferenceProfileId, 'nova') || contains(inferenceProfileId, 'claude')].inferenceProfileId"
 ```
 
-Then deploy with `cdk deploy -c model_id=<id>`.
+Then deploy with `cdk deploy -c model_id=<id>`. Amazon Nova Pro caps output at 10,000 tokens, so
+with it also set `OPSRELAY_MAX_TOKENS=10000`.
 
 ## Configuration
 
@@ -179,8 +184,9 @@ Environment variables, prefixed `OPSRELAY_` (see `opsrelay/config.py`):
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `MODEL_PROVIDER` | `offline` | `bedrock` (Claude via Bedrock) or `offline` (scripted) |
-| `BEDROCK_MODEL_ID` | `global.anthropic.claude-opus-5` | Bedrock model or inference-profile id |
+| `MODEL_PROVIDER` | `offline` | `bedrock` (a model on Bedrock) or `offline` (scripted) |
+| `BEDROCK_MODEL_ID` | `global.amazon.nova-2-lite-v1:0` | Bedrock model or inference-profile id |
+| `MAX_TOKENS` | `16000` | Maximum output tokens per model call; lower it for models with a smaller limit |
 | `STORE` | `sqlite` | `sqlite` (local) or `dynamodb` |
 | `DYNAMODB_TABLE` | `opsrelay` | Table name when `STORE=dynamodb` |
 | `SPECIALIST_TRANSPORT` | `local` | `local` (in-process) or `a2a` (remote agents) |

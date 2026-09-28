@@ -1,11 +1,11 @@
 #!/bin/bash
 # EC2 user data (Amazon Linux 2023): install OpsRelay and run `opsrelay up` as a systemd service.
-# The agents call Claude on Bedrock with the instance role's credentials; no keys on the box.
+# The agents call Amazon Bedrock with the instance role's credentials; no keys on the box.
 # The dashboard has no login: restrict port 8080 to trusted IPs in the security group.
 set -euxo pipefail
 
 REPO_URL="${REPO_URL:-https://github.com/avinashjaiengineer/opsrelay.git}"
-MODEL_ID="${MODEL_ID:-global.anthropic.claude-opus-5}"
+MODEL_ID="${MODEL_ID:-global.amazon.nova-2-lite-v1:0}"
 REGION="$(TOKEN=$(curl -sX PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds: 60') \
   && curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/placement/region)"
 

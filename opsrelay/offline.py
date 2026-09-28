@@ -1,7 +1,7 @@
 """Offline mode: a scripted Strands model provider.
 
 `ScriptedModel` implements the Strands `Model` interface, so offline agents are the very same
-`strands.Agent` objects, with the same tools, hooks and A2A wiring, as the Claude-on-Bedrock
+`strands.Agent` objects, with the same tools, hooks and A2A wiring, as the Bedrock-backed
 agents. Only the decisions come from a deterministic playbook instead of an LLM. That keeps
 the full agent-to-agent workflow runnable in CI and in demos without an AWS account.
 """

@@ -162,8 +162,9 @@ What the suite covers:
 
 ## 7. Next steps
 
-- **Use Claude instead of the scripted model:** see "Using Claude on Bedrock locally" in the
-  [README](../README.md#using-claude-on-bedrock-locally).
+- **Use a real model instead of the scripted one:** see "Using a real model on Bedrock locally"
+  in the [README](../README.md#using-a-real-model-on-bedrock-locally). Amazon Nova is the
+  default; Claude works too if your account has it.
 - **Deploy to AWS:** see [Deploy to Amazon Bedrock AgentCore](../README.md#deploy-to-amazon-bedrock-agentcore).
 - **How it's built:** [ARCHITECTURE.md](ARCHITECTURE.md).
 

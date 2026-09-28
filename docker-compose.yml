@@ -5,7 +5,7 @@
 #   curl -s localhost:8080/invocations -H 'content-type: application/json' \
 #        -d '{"action": "simulate", "scenario": "bad-deploy"}'
 #
-# Offline (scripted) agents by default. To use Claude on Bedrock, set
+# Offline (scripted) agents by default. To use a model on Bedrock, set
 # OPSRELAY_MODEL_PROVIDER=bedrock and AWS credentials in .env (see .env.example).
 
 x-agent: &agent
