@@ -28,6 +28,13 @@ PagerDuty and Jira** hear about incidents as they happen (Slack can approve from
 See the [user guide](docs/USER_GUIDE.md) for the whole workflow in screenshots, why it's useful,
 and ideas for improving it.
 
+**It fixes real outages.** Below, a bad release on a real ECS service: the CloudWatch alarm fires,
+the agents diagnose it from real metrics, logs and the deployment, a person approves in Slack, and
+OpsRelay rolls back and verifies recovery on live metrics, about seven minutes end to end
+([write-up](docs/WRITEUP.md); try it with [deploy/demo](deploy/demo/demo.py)).
+
+![A real ECS outage handled end to end](docs/images/real-outage.gif)
+
 **Measured, not assumed.** On Amazon Nova 2 Lite, the evaluation suite found the agents proposing
 the right fix only half the time. Hardening the platform against what it found (stalls, retry
 loops, prose instead of typed results, an injected instruction relayed between agents) took that to
@@ -196,6 +203,11 @@ HTTPS:
    API Gateway cuts requests off at 30 s; the dashboard uses `async` for anything longer.
 3. **Slack.** Create the app from [deploy/slack-app-manifest.yaml](deploy/slack-app-manifest.yaml)
    with your HTTPS address; see Integrations below.
+4. **A real workload.** `python deploy/demo/demo.py up` runs `shop-api` on ECS Fargate (about $0.30
+   a day) with a CloudWatch alarm, and prints its service catalog entry. Run OpsRelay with
+   `OPSRELAY_ENVIRONMENT=hybrid` (catalog services are real; the rest stay simulated, so scenarios
+   still work) and `OPSRELAY_SERVICE_CATALOG`. `demo.py break` deploys a bad release; `down` removes
+   everything.
 
 ## Deploy to Amazon Bedrock AgentCore
 

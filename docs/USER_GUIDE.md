@@ -23,6 +23,7 @@ scripted or edited; the agents wrote every sentence you see. (To install and sta
   - [10. When the agents hand over: a postmortem draft](#10-when-the-agents-hand-over-a-postmortem-draft)
   - [11. Approving from Slack](#11-approving-from-slack)
   - [12. Measuring the agents](#12-measuring-the-agents)
+  - [13. A real outage](#13-a-real-outage)
 - [How the governance layer works](#how-the-governance-layer-works)
 - [How to use it](#how-to-use-it)
 - [Why it's useful](#why-its-useful)
@@ -198,6 +199,19 @@ once more to submit it); an instruction hidden in an alert that the coordinator 
 (remediation now takes its task from the platform, never from the coordinator); and a version
 written `v2.13.4` instead of `2.13.4` (normalized). `opsrelay replay inc-…` reruns a past incident
 on a new model or prompt and lists what changed; CI runs the eval on every push.
+
+### 13. A real outage
+
+![A real ECS outage, from bad release to verified recovery](images/real-outage.gif)
+
+The same flow on real infrastructure: `shop-api` runs on Amazon ECS Fargate, and OpsRelay reads its
+CloudWatch metrics and logs and its ECS deployments (`OPSRELAY_ENVIRONMENT=hybrid`). A bad release
+fails 40% of checkouts; the CloudWatch alarm reaches OpsRelay through EventBridge and SQS; the agents
+diagnose it from the real error rate, the real exception, the deployment and an earlier incident,
+and propose a rollback to the release that ran before. After the Slack approval, OpsRelay updates
+the ECS service, waits for the rollout and fresh metrics, and verifies recovery before resolving.
+
+![Resolved on real infrastructure](images/15-real-outage-resolved.jpg)
 
 ## How the governance layer works
 
