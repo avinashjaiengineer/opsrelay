@@ -113,6 +113,11 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("health", help="service health")
     p = sub.add_parser("up", help="run the coordinator and the four specialists locally over A2A (no Docker)")
     p.add_argument("--port", type=int, default=8080, help="coordinator port (default 8080)")
+    p.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="where the coordinator and dashboard listen (default 127.0.0.1; 0.0.0.0 for a server)",
+    )
     p.add_argument("--specialist-port", type=int, default=9001, help="first of four specialist ports (default 9001)")
     p.add_argument("--no-browser", action="store_true", help="don't open the dashboard in a browser")
 
@@ -121,7 +126,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "up":
         from .local import run_local_stack
 
-        run_local_stack(port=args.port, specialist_base_port=args.specialist_port, open_browser=not args.no_browser)
+        run_local_stack(
+            host=args.host,
+            port=args.port,
+            specialist_base_port=args.specialist_port,
+            open_browser=not args.no_browser,
+        )
         return 0
 
     def call(payload: dict[str, Any]) -> dict[str, Any]:

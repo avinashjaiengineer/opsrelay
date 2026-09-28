@@ -49,7 +49,9 @@ def add_dashboard(app) -> None:  # noqa: ANN001
 def run_local_stack(
     host: str = "127.0.0.1", port: int = 8080, specialist_base_port: int = 9001, open_browser: bool = True
 ) -> None:
-    urls = {role: f"http://{host}:{specialist_base_port + i}" for i, role in enumerate(SPECIALISTS)}
+    """`host` is where the coordinator and dashboard listen; the specialists always stay on loopback."""
+    urls = {role: f"http://127.0.0.1:{specialist_base_port + i}" for i, role in enumerate(SPECIALISTS)}
+    shown_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host  # noqa: S104 - a bind address, not a URL
 
     # Point the coordinator at the specialists over A2A before anything reads the settings.
     os.environ["OPSRELAY_SPECIALIST_TRANSPORT"] = "a2a"
@@ -63,7 +65,7 @@ def run_local_stack(
 
     for role, url in urls.items():
         config = uvicorn.Config(
-            build_app(role, url + "/"), host=host, port=int(url.rsplit(":", 1)[1]), log_level="warning"
+            build_app(role, url + "/"), host="127.0.0.1", port=int(url.rsplit(":", 1)[1]), log_level="warning"
         )
         threading.Thread(target=uvicorn.Server(config).run, name=f"a2a-{role}", daemon=True).start()
     _wait_until_up(list(urls.values()))
@@ -77,10 +79,12 @@ def run_local_stack(
     print(f"  {'state:':<16}{os.path.abspath(settings.sqlite_path) if settings.store == 'sqlite' else settings.store}")
     for role, url in urls.items():
         print(f"  {role + ':':<16}{url}/.well-known/agent-card.json  (A2A)")
-    print(f"  {'coordinator:':<16}http://{host}:{port}/invocations")
-    dashboard_url = f"http://{host}:{port}/"
+    print(f"  {'coordinator:':<16}http://{shown_host}:{port}/invocations")
+    if shown_host != host:
+        print(f"  {'listening on:':<16}{host}:{port} (reachable from other machines)")
+    dashboard_url = f"http://{shown_host}:{port}/"
     print(f"\n  Dashboard:  {dashboard_url}\n")
-    print(f"Or from another terminal:  opsrelay --url http://{host}:{port} simulate bad-deploy\n")
+    print(f"Or from another terminal:  opsrelay --url http://{shown_host}:{port} simulate bad-deploy\n")
     add_dashboard(app)
     if open_browser:
         threading.Timer(1.5, webbrowser.open, args=[dashboard_url]).start()
