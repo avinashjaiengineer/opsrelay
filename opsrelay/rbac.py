@@ -29,6 +29,7 @@ ACTIONS: dict[str, frozenset[str]] = {
     "get_contracts": READ,
     "search_runbooks": READ,
     "integrations": READ,
+    "changes": READ,
     "similar_incidents": READ,
     "get_postmortem": READ,
     "list_evals": READ,

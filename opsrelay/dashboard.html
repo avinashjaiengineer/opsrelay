@@ -181,6 +181,8 @@ let selected = new URLSearchParams(location.search).get("incident");  // links f
 let showTools = false;
 let showAllEvents = false;
 let busy = false;
+// Replace a panel's HTML only when it changed: no flicker, and text selection and hover survive.
+const setHTML = (el, html) => { if (el._html !== html) { el.innerHTML = html; el._html = html; } };
 let me = null;  // the signed-in principal, from whoami
 const TIMELINE_PREVIEW = 6;
 const tokenKey = "opsrelay.token";
@@ -276,22 +278,22 @@ window.toggleTools = (on) => { showTools = on; refresh(); };
 window.toggleAll = () => { showAllEvents = !showAllEvents; refresh(); };
 
 function renderHealth(services) {
-  $("health").innerHTML = services.map((s) => `
+  setHTML($("health"), services.map((s) => `
     <tr><td>${esc(s.service)} <span class="kind">tier ${s.tier}</span></td>
         <td class="num">${(s.error_rate * 100).toFixed(1)}% · ${s.p99_latency_ms} ms</td>
-        <td class="num">${s.healthy ? '<span class="chip ok">ok</span>' : '<span class="chip bad">degraded</span>'}</td></tr>`).join("");
+        <td class="num">${s.healthy ? '<span class="chip ok">ok</span>' : '<span class="chip bad">degraded</span>'}</td></tr>`).join(""));
 }
 
 function renderIncidents(incidents) {
-  if (!incidents.length) { $("incidents").innerHTML = "None yet. Trigger a scenario above."; return; }
+  if (!incidents.length) { setHTML($("incidents"), "None yet. Trigger a scenario above."); return; }
   if (!selected) selected = incidents[0].id;
   $("incidents").classList.remove("empty");
-  $("incidents").innerHTML = incidents.map((i) => `
+  setHTML($("incidents"), incidents.map((i) => `
     <button class="incident ${i.id === selected ? "active" : ""}" onclick="select('${esc(i.id)}')">
       ${chip(i.status)} ${i.severity ? `<span class="chip ${sevClass(i.severity)}">${esc(i.severity)}</span>` : ""}
       <div>${esc(i.title)}</div>
       <div class="meta">${esc(i.id)} · ${time(i.created_at)}</div>
-    </button>`).join("");
+    </button>`).join(""));
 }
 
 const sevClass = (s) => (s === "SEV1" ? "bad" : s === "SEV2" ? "warn" : "info");
@@ -420,7 +422,7 @@ function renderDetail(data, audit) {
   const auditChip = audit
     ? audit.ok ? `<span class="chip ok" title="head ${esc(audit.head)}">✓ Audit verified</span>` : `<span class="chip bad">✗ Audit broken</span>`
     : "";
-  $("detail").innerHTML = `
+  setHTML($("detail"), `
     <section class="card head">
       <div class="headline">${chip(i.status)} <span class="kind mono">${esc(i.id)}</span> ${auditChip}
         ${i.severity ? `<span class="chip ${sevClass(i.severity)}">${esc(i.severity)}</span>` : ""}</div>
@@ -435,7 +437,7 @@ function renderDetail(data, audit) {
     ${remediationCard(i, data.approvals)}
     ${timelineCard(data.events)}
     ${auditCard(i, audit, data.events)}
-    ${postmortemCard(i)}`;
+    ${postmortemCard(i)}`);
 }
 
 async function refresh() {
@@ -480,7 +482,7 @@ async function refreshOps() {
           <td class="num">p90 ${dur(a.latency_seconds.p90)}</td>
           <td class="num">${a.retries + a.unavailable + a.contract_violations ? `<span class="chip warn">${a.retries + a.unavailable + a.contract_violations} issues</span>` : '<span class="chip ok">ok</span>'}</td></tr>`).join("");
     $("ops").classList.remove("empty");
-    $("ops").innerHTML = `
+    setHTML($("ops"), `
       <div class="tiles">
         ${tile("MTTR", dur(st.time_to_resolve.median), "median time from incident opened to resolved")}
         ${tile("MTTA", dur(st.time_to_acknowledge.median), "median time from approval requested to a person deciding")}
@@ -490,13 +492,27 @@ async function refreshOps() {
         ${tile("Escalated", pctOrDash(inc.escalated_rate), "of closed incidents")}
       </div>
       ${agents ? `<table style="margin-top:8px">${agents}</table>` : ""}
-      <div class="kind" style="margin-top:6px">Last ${m.window.incidents} incidents · policy ${Object.entries(m.policy_decisions).map(([k, v]) => `${esc(k.replaceAll("_", " ").toLowerCase())} ${v}`).join(", ") || "–"}${m.alerts.deduplicated + m.alerts.correlated ? ` · alerts deduplicated ${m.alerts.deduplicated}, correlated ${m.alerts.correlated}` : ""}</div>`;
+      <div class="kind" style="margin-top:6px">Last ${m.window.incidents} incidents · policy ${Object.entries(m.policy_decisions).map(([k, v]) => `${esc(k.replaceAll("_", " ").toLowerCase())} ${v}`).join(", ") || "–"}${m.alerts.deduplicated + m.alerts.correlated ? ` · alerts deduplicated ${m.alerts.deduplicated}, correlated ${m.alerts.correlated}` : ""}</div>`);
   } catch (e) { /* not signed in, or no permission: leave the panel as is */ }
+}
+
+// Live updates: poll a cheap fingerprint every 1.5 s and fetch everything only when it changes
+// (and every 15 s regardless, for service health, which moves without incident changes).
+let version = null, lastFull = 0;
+async function tick() {
+  if (busy || !me && document.getElementById("signin").style.display !== "none") return;
+  try {
+    const v = (await call({action: "changes", incident_id: selected || undefined})).version;
+    if (v !== version || Date.now() - lastFull > 15000) {
+      version = v; lastFull = Date.now();
+      await refresh();
+    }
+  } catch (e) { await refresh(); }  // shows "sign in" or "disconnected"
 }
 
 loadIdentity().then(refresh).then(refreshOps);
 setInterval(refreshOps, 10000);
-setInterval(refresh, 1500);
+setInterval(tick, 1500);
 </script>
 </body>
 </html>

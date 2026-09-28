@@ -177,6 +177,10 @@ class Store(ABC):
     def list_events(self, incident_id: str) -> list[Record]:
         """Oldest first."""
 
+    def event_count(self, incident_id: str) -> int:
+        """How many events an incident's audit chain holds (stores override this cheaply)."""
+        return len(self.list_events(incident_id))
+
     # Approvals
     @abstractmethod
     def get_approval(self, approval_id: str) -> Record | None: ...

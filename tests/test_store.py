@@ -241,3 +241,12 @@ def test_sqlite_concurrent_writers_keep_one_chain(tmp_path):
     events = store.list_events(inc["id"])
     assert len(events) == 50
     assert verify_chain(events)["ok"]
+
+
+def test_event_count_is_cheap_and_exact(any_store):
+    inc = _incident()
+    any_store.put_incident(inc)
+    assert any_store.event_count(inc["id"]) == 0
+    for n in range(3):
+        any_store.record(inc["id"], "platform", "note", f"event {n}")
+    assert any_store.event_count(inc["id"]) == 3 == len(any_store.list_events(inc["id"]))

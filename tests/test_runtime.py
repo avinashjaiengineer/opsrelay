@@ -155,3 +155,16 @@ def test_local_dashboard_is_served_and_packaged(client):
     assert "<title>OpsRelay</title>" in resp.text
     assert '"/invocations"' in resp.text
     assert [getattr(r, "path", None) for r in coordinator.app.router.routes].count("/") == 1
+
+
+def test_changes_fingerprint_moves_only_when_the_console_would(service):
+    incident = service.simulate("bad-deploy")["incident"]
+    before = service.changes(incident["id"])
+    assert service.changes(incident["id"]) == before  # nothing happened
+    service.store.record(incident["id"], "platform", "note", "something new on the timeline")
+    after_event = service.changes(incident["id"])
+    assert after_event != before
+    [approval] = service.list_approvals()
+    service.decide_approval(approval["id"], approve=True, approver="jane")
+    assert service.changes(incident["id"]) != after_event
+    assert service.store.event_count(incident["id"]) == len(service.store.list_events(incident["id"]))

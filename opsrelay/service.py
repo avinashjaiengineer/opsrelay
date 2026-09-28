@@ -234,6 +234,17 @@ class IncidentService:
             "similar": memory.similar(self.store, incident) if incident.get("service") else [],
         }
 
+    def changes(self, incident_id: str | None = None) -> str:
+        """A short fingerprint of what the console shows: the incident list (ids, statuses, update
+        times) and the selected incident's event count. The console polls this cheaply and fetches
+        everything only when it changes."""
+        import hashlib
+        import json
+
+        listing = [(i["id"], i["status"], i.get("updated_at")) for i in self.store.list_incidents(50)]
+        events = self.store.event_count(incident_id) if incident_id else 0
+        return hashlib.sha256(json.dumps([listing, events]).encode()).hexdigest()[:16]
+
     def postmortem(self, incident_id: str) -> Record:
         return postmortem.render(self.store, incident_id)
 

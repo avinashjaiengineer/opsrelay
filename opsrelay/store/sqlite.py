@@ -158,6 +158,9 @@ class SqliteStore(Store):
     def list_events(self, incident_id: str) -> list[Record]:
         return self._all("SELECT doc FROM events WHERE incident_id = ? ORDER BY seq", (incident_id,))
 
+    def event_count(self, incident_id: str) -> int:
+        return self._conn.execute("SELECT COUNT(*) FROM events WHERE incident_id = ?", (incident_id,)).fetchone()[0]
+
     # Approvals
     def get_approval(self, approval_id: str) -> Record | None:
         return self._one("SELECT doc FROM approvals WHERE id = ?", (approval_id,))

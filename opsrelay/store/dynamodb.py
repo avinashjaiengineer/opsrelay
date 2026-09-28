@@ -286,6 +286,10 @@ class DynamoStore(Store):
     def list_events(self, incident_id: str) -> list[Record]:
         return self._query(Key("pk").eq(f"INC#{incident_id}") & Key("sk").begins_with("EVT#"))
 
+    def event_count(self, incident_id: str) -> int:
+        item = self.table.get_item(Key={"pk": f"INC#{incident_id}", "sk": "CHAIN"}, ConsistentRead=True).get("Item")
+        return int(item.get("n", 0)) if item else 0
+
     # Approvals
     def get_approval(self, approval_id: str) -> Record | None:
         return self._get(f"APR#{approval_id}")
