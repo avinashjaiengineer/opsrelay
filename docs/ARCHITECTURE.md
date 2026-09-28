@@ -96,11 +96,72 @@ account or model spend: tools, hooks, contracts, policy, A2A servers, the runtim
 Docker Compose topology. When a real model behaves differently, the offline tests show whether the
 platform or the model changed.
 
+## Atomic state and audit
+
+Every write goes through `Store.commit`, one transaction: a SQLite `BEGIN IMMEDIATE`, or a DynamoDB
+`TransactWriteItems` of up to 100 items. A commit can change an incident (conditioned on its
+status), create or move approvals (conditioned on their status), create or move records
+(conditioned on their revision), and append audit events. The events are sealed onto their
+incident's hash chain inside the same transaction; on DynamoDB each incident's `CHAIN` item holds
+the head hash and the event count, the transaction is conditioned on it, and each event is keyed by
+its position in the chain. So a status change and the events describing it exist together or not
+at all, and concurrent writers can neither fork nor reorder a chain. If a DynamoDB transaction is
+cancelled, the conditions are re-read: a real conflict returns "no change"; a lost race on a chain
+head retries.
+
+## Executions: leases and reconciliation
+
+An execution is a record keyed by its idempotency key and held under a lease
+(`execution_lease_seconds`). A finished execution replays its result. A live lease means another
+executor is working on it: the incident stays `remediating` rather than failing. An expired lease
+means the executor died mid-action: the next one takes the lease over (compare-and-set on the
+revision) and asks the environment what happened, `Environment.reconcile`: *applied* (record
+success, don't repeat), *not applied* (run it once), or *unknown* (fail safe: the incident fails and
+goes to a person). Environments tag each change with its key: the simulation keeps applied keys on
+the service; the ECS connector tags the service with the intended change *before* making it, then
+compares the service's actual state with that target. `approvals.recover` finds interrupted
+remediations; the worker runs it every `recovery_interval_seconds`.
+
+## Durable work
+
+The coordinator runtime no longer runs background work in bare threads. An async request enqueues a
+job record; a worker claims it with a lease that a heartbeat renews while it runs. If the process
+dies, the lease expires and any worker, after a restart or in another replica, takes the job over.
+Re-running a coordination job is safe because the coordinator acts on the incident's state and
+never repeats a step that succeeded. A job that fails `job_max_attempts` times is dead-lettered and
+its incident handed to a person. (On AWS, the natural next step is an SQS queue in front of the
+coordinator; the job model maps onto it directly.)
+
+## Security
+
+- **Authentication** (`auth.py`): `none` for development, `dev` bearer tokens (stored as SHA-256
+  hashes), or `oidc` JWTs verified against the provider's JWKS. ASGI middleware authenticates every
+  API call; the dashboard page and `/ping` stay public.
+- **Authorization** (`rbac.py`): six roles; each API action names the roles allowed. Deciding a
+  remediation needs a role that matches its risk and the incident's severity, and with
+  authentication on the approver is the authenticated principal, stored with its role and
+  `identity_verified` on the approval and its audit event.
+- **Policy changes** (`policy_admin.py`): versions stored with author, reviewer and activation;
+  the reviewer must differ from the author; each step is an event on the `policy` audit chain.
+- **Agent-to-agent**: SigV4 and IAM on AgentCore; a shared bearer token elsewhere (`a2a_auth.py`).
+- **IAM**: Bedrock scoped to the configured model; DynamoDB writes scoped per runtime with
+  `dynamodb:LeadingKeys`, mirroring the agent contracts; secrets from Secrets Manager.
+
 ## What to build next
 
-- **Intelligence:** runbook retrieval, incident memory (similar past incidents, postmortems and
-  rejection notes), an evaluation suite per agent, and incident replay against new model versions.
-- **Enterprise:** authentication and roles (viewer, operator, incident commander, SRE, admin,
-  auditor), Secrets Manager, EventBridge/SQS intake, Slack or Teams approvals, OpenTelemetry
-  tracing and CloudWatch metrics.
-- **Real connectors:** implement `Environment` for CloudWatch, your CMDB and your deploy tool.
+Done since the first review: atomic state + audit, execution leases and reconciliation, durable
+jobs, A2A authentication, CloudWatch/ECS connectors, authentication, roles, audited policy changes,
+least-privilege IAM and Secrets Manager. Still open:
+
+- **Event-driven intake:** EventBridge and SQS (CloudWatch alarms, Alertmanager and PagerDuty
+  webhooks) with deduplication, instead of scenarios and direct API calls; SQS in front of the
+  coordinator for jobs.
+- **More connectors:** EKS/Kubernetes, your deploy tool, a CMDB, ticketing.
+- **Observability:** OpenTelemetry traces per incident, and metrics (agent latency and failures,
+  policy denials, time to diagnose, approve and resolve).
+- **Intelligence:** runbook retrieval, incident memory, an evaluation suite per agent, incident
+  replay against new model versions.
+- **Console:** server-sent events instead of polling; a React/TypeScript console; Slack or Teams
+  approvals.
+- **Operations:** multi-tenant isolation, disaster recovery, an AgentCore JWT authorizer in front
+  of the coordinator so the platform, not only the application, checks tokens.

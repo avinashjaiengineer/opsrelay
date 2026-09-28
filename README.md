@@ -223,25 +223,74 @@ Environment variables, prefixed `OPSRELAY_` (see `opsrelay/config.py`):
 | `BREAKER_FAILURE_THRESHOLD` | `5` | Consecutive failures that open an agent's circuit |
 | `BREAKER_RECOVERY_SECONDS` | `30` | How long an open circuit fails fast before a trial call |
 | `ROLE` | `coordinator` | Which agent a container serves |
+| `ENVIRONMENT` | `simulated` | `simulated` (scenarios) or `aws` (CloudWatch metrics and logs, ECS actions; see below) |
+| `SERVICE_CATALOG` | | YAML service catalog for `ENVIRONMENT=aws` (see `deploy/catalog.example.yaml`) |
+| `AUTH_MODE` | `none` | `none`, `dev` or `oidc` (see Governance) |
+| `DEV_USERS` | | Dev users file (`opsrelay users add`), or a Secrets Manager ARN holding it |
+| `OIDC_ISSUER`, `OIDC_AUDIENCE` | | Your identity provider, e.g. a Cognito user pool and its app client id |
+| `A2A_TOKEN` | | Shared token for specialist A2A servers outside AgentCore (may be a Secrets Manager ARN) |
+| `EXECUTION_LEASE_SECONDS`, `JOB_LEASE_SECONDS` | `300`, `900` | How long a stopped executor or worker holds its lease before another takes over |
 
 ## Governance and safety
 
 | Layer | Where | What it guarantees |
 |---|---|---|
-| **State machine** | `lifecycle.py` | Only the moves in `ALLOWED_TRANSITIONS`. Status changes are compare-and-set writes (SQLite transaction, DynamoDB `ConditionExpression`); `update_incident` refuses to touch status. |
+| **State machine** | `lifecycle.py` | Only the moves in `ALLOWED_TRANSITIONS`. Status changes are compare-and-set writes; `update_incident` refuses to touch status. |
+| **Atomic state + audit** | `store/` | Every write is one `Store.commit` (a SQLite transaction, a DynamoDB `TransactWriteItems`): a status change, its approvals and records, and the audit events describing it land together or not at all. The log can't miss a change or record one that didn't happen. |
 | **Agent contracts** | `contracts.py` | Each agent acts only in its states, gets only its tools, makes only its transitions, and must leave its typed result. Breaches are refused and logged as `contract.violation`. |
 | **Typed interfaces** | `schemas.py` | Agent output is validated by pydantic (`TriageResult`, `DiagnosisResult`, `RemediationProposal`, `VerificationResult`, `StatusUpdate`, `Postmortem`) before it reaches the workflow. Invalid output goes back to the agent with the errors. |
 | **Policy engine** | `policy.py`, `policies.yaml` | ALLOW, APPROVAL_REQUIRED or DENY per proposal, with reasons: action allow-list, risk (raised on tier-1 services, never lowered below the agent's estimate), parameter bounds, confidence thresholds, a proposal limit. |
 | **Approval engine** | `approvals.py` | One decision per approval (conditional write). A rejection escalates. |
-| **Execution engine** | `executor.py` | The only code that changes infrastructure. Each action runs once per idempotency key, so retries and duplicate events can't repeat it. |
+| **Execution engine** | `executor.py` | The only code that changes infrastructure. Each action runs once per idempotency key, under a lease. If the executor dies mid-action, the next one takes the lease over and **reconciles** with the environment (applied / not applied / unknown) instead of guessing; unknown fails safe to a person. |
 | **Separation of duties** | contracts | Remediation proposes; verification judges the outcome; only communications resolves; only the platform starts execution. |
 | **Resilience** | `resilience.py`, `deadletter.py` | Timeouts, retries with exponential backoff, a circuit breaker per agent, a dead-letter queue, and escalation to a person. A retry is skipped if the lost attempt already did its job. |
+| **Durable work** | `jobs.py` | Background work is a job in the shared store, claimed under a lease that a heartbeat renews. If a process dies, another worker takes the job over; a job that keeps failing is dead-lettered. Interrupted remediations are recovered automatically. |
+| **Authentication** | `auth.py` | `OPSRELAY_AUTH_MODE=dev` (named users, hashed bearer tokens) or `oidc` (JWTs from Cognito or any OIDC provider, verified against its JWKS). With it on, a decision's approver is the signed-in person, never a typed name. |
+| **Roles** | `rbac.py` | viewer, operator, sre, incident_commander, admin, auditor. Approving needs a role matching the risk and severity (SEV1 or critical: incident commander). Admins change policy but can't approve actions. |
+| **Audited policy changes** | `policy_admin.py` | Policy versions are proposed, reviewed by a *second* admin, and activated; each step is on the `policy` audit chain. |
 | **Tamper-evident audit** | `audit.py`, stores | Every event stores the previous event's hash; `opsrelay audit <incident>` finds the first altered or missing event. Events record the actor type, input and output hashes, and the agent, agent version, model and prompt version. |
 | **Untrusted input** | prompts | Alert and log text reach the agents as data; the prompts say so. |
-| **IAM** | `infra/stack.py` | SigV4 between agents on AWS; each runtime role has only the permissions it needs. |
+| **Agent-to-agent auth** | `a2a_auth.py`, `remote.py` | On AgentCore, SigV4 and IAM. Elsewhere, specialists require a shared bearer token (`OPSRELAY_A2A_TOKEN`; `opsrelay up` generates one per run). |
+| **Least-privilege IAM** | `infra/stack.py` | Bedrock access only to the configured model. DynamoDB writes limited per runtime by key prefix, mirroring the agent contracts. Secrets from Secrets Manager (`secrets.py`). |
 
 `opsrelay contracts` prints the lifecycle, every contract and who may make each move;
 `opsrelay policy test ACTION SERVICE` shows the decision for a proposal.
+
+## Security
+
+Out of the box OpsRelay runs with authentication off, for local development: the dashboard shows
+the approver's name as **unverified**. To require sign-in:
+
+```powershell
+opsrelay users add "Jane" --roles sre,incident_commander --file users.yaml   # prints Jane's token once
+opsrelay users add "Ada" --roles admin --file users.yaml
+$env:OPSRELAY_AUTH_MODE="dev"; $env:OPSRELAY_DEV_USERS="users.yaml"
+opsrelay up                                    # the dashboard now asks for a token
+opsrelay --url http://127.0.0.1:8080 --token <token> whoami
+```
+
+For production, use `OPSRELAY_AUTH_MODE=oidc` with your identity provider (for Amazon Cognito:
+`OPSRELAY_OIDC_ISSUER=https://cognito-idp.<region>.amazonaws.com/<pool id>`,
+`OPSRELAY_OIDC_AUDIENCE=<app client id>`, and user groups named after the roles). Keep the dev users
+file or tokens in Secrets Manager by passing its ARN instead of a path.
+
+Policy changes go through two admins:
+
+```powershell
+opsrelay policy propose my-policy.yaml --note "allow restarts without approval"   # Ada
+opsrelay policy approve v1                                                        # Bob (not Ada)
+opsrelay policy activate v1
+opsrelay policy history; opsrelay audit policy
+```
+
+## Connecting real systems
+
+`OPSRELAY_ENVIRONMENT=aws` replaces the simulation with real services: a YAML service catalog
+(tiers, owners, dependencies, log groups, ECS services, health thresholds; see
+`deploy/catalog.example.yaml`), metrics from CloudWatch, logs from CloudWatch Logs, and
+rollbacks, restarts and scaling on Amazon ECS. Before changing anything, OpsRelay tags the ECS
+service with the intended change, so after a crash it can tell whether the change happened.
+Services without an ECS entry are observed but never changed.
 
 ## Extending
 
@@ -264,6 +313,11 @@ opsrelay/
   approvals.py   approval engine
   executor.py    execution engine (idempotent)
   resilience.py  retries, timeouts, circuit breakers; deadletter.py: the dead-letter workflow
+  jobs.py        durable job queue and worker (leases, heartbeats, recovery)
+  auth.py        authentication (none, dev tokens, OIDC); rbac.py: roles and permissions
+  policy_admin.py versioned, reviewed, audited policy changes
+  a2a_auth.py    bearer-token auth for specialist A2A servers; secrets.py: Secrets Manager
+  connectors/    AWS environment: service catalog, CloudWatch, CloudWatch Logs, ECS
   audit.py       audit hash-chain verification
   environment.py connector interface + simulated IT environment and scenarios
   offline.py     scripted Strands model provider for offline runs
@@ -271,17 +325,17 @@ opsrelay/
   service.py     incident operations used by the runtime and CLI
   cli.py         `opsrelay` command
 infra/           AWS CDK app (AgentCore runtimes, DynamoDB, IAM)
-tests/           lifecycle, contracts, policy, approvals, workflow, A2A, runtime, stores, agents, infra
+tests/           lifecycle, contracts, policy, approvals, jobs, auth, connectors, workflow, A2A, runtime, stores, agents, infra
 docs/            USER_GUIDE.md: the workflow in screenshots; WALKTHROUGH.md: hands-on tour;
                  ARCHITECTURE.md: design decisions and next steps
-deploy/ec2/      user data to run OpsRelay on an EC2 instance
+deploy/          EC2 user data; an example service catalog
 ```
 
 ## Development
 
 ```bash
 pip install -e ".[dev]" aws-cdk-lib constructs
-pytest            # 97 tests, fully offline
+pytest            # 128 tests, fully offline
 ruff check . && ruff format --check .
 ```
 
