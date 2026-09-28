@@ -303,7 +303,8 @@ def diagnostics_tools(store: Store, env: Environment, role: str = "diagnostics")
             root_cause: One or two sentences naming the most likely root cause.
             category: The failure mode; use "unknown" if the evidence doesn't support a conclusion.
             evidence: Observations that support the diagnosis, each {"source": ..., "value": ...}
-                where source is one of metrics, logs, deployment, dependency, cmdb, alert, and value
+                where source is one of metrics, logs, deployment, dependency, cmdb, alert, runbook,
+                history (a similar past incident), and value
                 is the specific observation (a metric value, log line or deploy time).
             confidence: How sure you are, from 0.0 to 1.0. Below 0.7 no action will be allowed and
                 the incident goes to a human; be honest.

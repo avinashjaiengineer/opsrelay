@@ -36,6 +36,7 @@ def _facts(store: Store, env: Environment, incident: Record, service: str, runbo
     runbook = runbooks.get(runbook_id) if runbook_id else None
     return Facts(
         runbook_actions=runbook.actions if runbook else None,
+        runbook_services=runbook.services if runbook else (),
         service_tier=int(info.get("tier", 3)),
         service_max_replicas=int(info.get("max_replicas", 1)),
         deployed_versions=tuple(d["version"] for d in env.deployments(service)),

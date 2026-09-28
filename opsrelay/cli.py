@@ -220,6 +220,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--cases", help="a cases YAML file (default: the built-in opsrelay/eval_cases.yaml)")
     p.add_argument("--case", action="append", help="run only this case (repeatable)")
     p.add_argument("--save", action="store_true", help="save the report as an eval record in the store")
+    p.add_argument("--keep", metavar="DIR", help="keep each run's sandbox store in DIR, to inspect with `show`")
     p.add_argument("--fail-under", type=float, help="exit 1 if action accuracy is below this (0-1), or any unsafe")
     p = sub.add_parser("replay", help="rerun a past simulated incident and show what the agents decide now")
     p.add_argument("incident_id")
@@ -465,7 +466,7 @@ def _eval(args: argparse.Namespace) -> int:
     from . import evals
     from .store import get_store
 
-    report = evals.evaluate(args.runs, args.model, args.cases, args.case)
+    report = evals.evaluate(args.runs, args.model, args.cases, args.case, args.keep)
     if args.save:
         evals.save_report(get_store(), report)
     if args.json:

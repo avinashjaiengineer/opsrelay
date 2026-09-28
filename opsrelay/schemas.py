@@ -22,7 +22,8 @@ Severity = Literal["SEV1", "SEV2", "SEV3", "SEV4"]
 Risk = Literal["low", "medium", "high", "critical"]
 RISK_ORDER: tuple[Risk, ...] = ("low", "medium", "high", "critical")
 Category = Literal["bad-deploy", "memory-leak", "saturation", "dependency", "unknown"]
-EvidenceSource = Literal["metrics", "logs", "deployment", "dependency", "cmdb", "alert"]
+# runbook: a runbook's guidance (search_runbooks); history: a similar past incident (find_similar_incidents)
+EvidenceSource = Literal["metrics", "logs", "deployment", "dependency", "cmdb", "alert", "runbook", "history"]
 Audience = Literal["internal", "customers"]
 
 

@@ -78,9 +78,14 @@ def using_model(model: str | None) -> Iterator[str]:
 
 
 @contextmanager
-def sandbox() -> Iterator[tuple[Store, SimulatedEnvironment]]:
+def sandbox(keep_as: str | None = None) -> Iterator[tuple[Store, SimulatedEnvironment]]:
+    """A fresh store and simulated environment. `keep_as`: keep the store in this SQLite file (to
+    inspect a run afterwards with OPSRELAY_SQLITE_PATH=... opsrelay show)."""
     with tempfile.TemporaryDirectory() as tmp:
-        store = SqliteStore(str(Path(tmp) / "eval.db"))
+        if keep_as:
+            Path(keep_as).parent.mkdir(parents=True, exist_ok=True)
+            Path(keep_as).unlink(missing_ok=True)
+        store = SqliteStore(keep_as or str(Path(tmp) / "eval.db"))
         env = SimulatedEnvironment(store)
         env.seed()
         try:
@@ -150,7 +155,7 @@ def score(case: Record, out: Record) -> Record:
     return {"case": case["id"], "checks": checks, **out}
 
 
-def run_case(case: Record) -> Record:
+def run_case(case: Record, keep_as: str | None = None) -> Record:
     acceptable = set((case.get("expect") or {}).get("actions", []))
 
     def human(approval: Record) -> tuple[bool, str | None]:
@@ -160,7 +165,7 @@ def run_case(case: Record) -> Record:
 
     alert = {**(SCENARIOS[case["scenario"]]["alert"] if case.get("scenario") else {}), **(case.get("alert") or {})}
     started = time.monotonic()
-    with sandbox() as (store, env):
+    with sandbox(keep_as) as (store, env):
         try:
             incident = _drive(store, env, case.get("scenario"), alert, human)
             out = _outcome(store, incident)
@@ -175,7 +180,11 @@ def _rate(results: list[Record], metric: str) -> float | None:
 
 
 def evaluate(
-    runs: int = 1, model: str | None = None, cases_file: str | None = None, only: list[str] | None = None
+    runs: int = 1,
+    model: str | None = None,
+    cases_file: str | None = None,
+    only: list[str] | None = None,
+    keep_dir: str | None = None,
 ) -> Record:
     cases = [c for c in load_cases(cases_file) if not only or c["id"] in only]
     if not cases:
@@ -184,7 +193,8 @@ def evaluate(
     with using_model(model) as model_name:
         for case in cases:
             for n in range(runs):
-                results.append({**run_case(case), "run": n + 1})
+                keep = str(Path(keep_dir) / f"{case['id']}-{n + 1}.db") if keep_dir else None
+                results.append({**run_case(case, keep), "run": n + 1, **({"store": keep} if keep else {})})
     latencies = [r["seconds"] for r in results]
     summary = {m: _rate(results, m) for m in METRICS}
     summary.update(

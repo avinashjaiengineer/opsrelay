@@ -416,7 +416,7 @@ function postmortemCard(i) {
 
 function renderDetail(data, audit) {
   const i = data.incident;
-  const warnings = data.events.filter((e) => e.kind === "contract.violation" || e.kind === "agent.unavailable");
+  const warnings = data.events.filter((e) => ["contract.violation", "agent.unavailable", "coordinator.stalled"].includes(e.kind));
   const auditChip = audit
     ? audit.ok ? `<span class="chip ok" title="head ${esc(audit.head)}">✓ Audit verified</span>` : `<span class="chip bad">✗ Audit broken</span>`
     : "";
@@ -428,7 +428,7 @@ function renderDetail(data, audit) {
       ${lifecycle(i.status, data.events)}
       <div class="kind">${esc(i.description)}</div>
     </section>
-    ${warnings.map((w) => `<section class="warning">⚠ <strong>${esc(w.kind === "agent.unavailable" ? "Agent unavailable" : "Contract violation")}</strong> · ${esc(w.message)}</section>`).join("")}
+    ${warnings.map((w) => `<section class="warning">⚠ <strong>${esc({"agent.unavailable": "Agent unavailable", "coordinator.stalled": "Coordinator stalled"}[w.kind] || "Contract violation")}</strong> · ${esc(w.message)}</section>`).join("")}
     ${summaryCard(i)}
     ${diagnosisCard(i)}
     ${similarCard(data.similar)}

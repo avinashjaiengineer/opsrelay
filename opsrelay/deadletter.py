@@ -42,11 +42,11 @@ def dead_letter(
         )
     )
     if escalate:
-        _hand_to_human(store, incident_id, f"the {agent} agent is unavailable ({letter['id']})")
+        hand_to_human(store, incident_id, f"the {agent} agent is unavailable ({letter['id']})")
     return letter
 
 
-def _hand_to_human(store: Store, incident_id: str, reason: str) -> None:
+def hand_to_human(store: Store, incident_id: str, reason: str) -> None:
     incident = store.get_incident(incident_id)
     if incident is None or status_of(incident) in TERMINAL:
         return

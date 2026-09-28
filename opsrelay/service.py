@@ -43,6 +43,14 @@ def decision_prompt(approval: Record) -> str:
     )
 
 
+def stall_prompt(incident_id: str, why: str) -> str:
+    return (
+        f"Incident {incident_id} is not finished: {why}. Continue the response now: read the incident, "
+        "then ask the next specialist, or call escalate_incident if the agents cannot resolve it. "
+        "Do not stop while the incident is in progress and nothing is waiting on a person."
+    )
+
+
 class IncidentService:
     def __init__(
         self,
@@ -55,6 +63,21 @@ class IncidentService:
         self.invokers = invokers if invokers is not None else configured_invokers()
 
     def run_coordinator(self, incident_id: str, prompt: str) -> str:
+        report = self._coordinate(incident_id, prompt)
+        stalled = self.stalled(incident_id)
+        if stalled:  # one more chance, then a person
+            self.store.record(
+                incident_id, "platform", "coordinator.stalled", stalled + "; asking the coordinator again"
+            )
+            report = self._coordinate(incident_id, stall_prompt(incident_id, stalled))
+            stalled = self.stalled(incident_id)
+            if stalled:
+                self._hand_over(incident_id, stalled)
+        memory.remember_quietly(self.store, incident_id)  # if it closed; recover backfills misses
+        integrations.sync_quietly(self.store, incident_id)  # Slack, Teams, PagerDuty, Jira
+        return report
+
+    def _coordinate(self, incident_id: str, prompt: str) -> str:
         agent = build_coordinator(self.store, self.env, self.invokers)
         try:
             with telemetry.span("opsrelay.coordinate", incident_id=incident_id):
@@ -64,9 +87,26 @@ class IncidentService:
             self.store.record(incident_id, "coordinator", "error", f"{type(e).__name__}: {e}")
             raise
         self.store.record(incident_id, "coordinator", "report", report)
-        memory.remember_quietly(self.store, incident_id)  # if it closed; recover backfills misses
-        integrations.sync_quietly(self.store, incident_id)  # Slack, Teams, PagerDuty, Jira
         return report
+
+    def stalled(self, incident_id: str) -> str | None:
+        """Why the incident is stuck after a coordinator run, or None. An incident may rest only
+        where it waits on a person (awaiting approval), on the platform (remediating), or is closed."""
+        incident = self.store.get_incident(incident_id)
+        if incident is None:
+            return None
+        status = Status(incident["status"])
+        if status in TERMINAL or status in (Status.AWAITING_APPROVAL, Status.REMEDIATING):
+            return None
+        if status is Status.VERIFYING and (incident.get("verification") or {}).get("recovered"):
+            return "the service recovered, but the coordinator stopped before the postmortem resolved the incident"
+        return f"the coordinator stopped with the incident {status} and nothing waiting on a person"
+
+    def _hand_over(self, incident_id: str, why: str) -> None:
+        from .deadletter import hand_to_human
+
+        telemetry.count("coordinator_stalls_total")
+        hand_to_human(self.store, incident_id, f"{why}: handed to a person")
 
     def open_incident(
         self,
@@ -240,8 +280,9 @@ class IncidentService:
         if runbook_id:
             runbook = runbooks.get(runbook_id)
             runbook_actions = runbook.actions if runbook else None
+            runbook_services = runbook.services if runbook else ()
         else:
-            runbook_id, runbook_actions = "(assumed)", (action,)
+            runbook_id, runbook_actions, runbook_services = "(assumed)", (action,), ()
         proposal = RemediationProposal(
             incident_id="inc-0000000000",
             action=action,
@@ -254,6 +295,7 @@ class IncidentService:
         )
         facts = Facts(
             runbook_actions=runbook_actions,
+            runbook_services=runbook_services,
             service_tier=int(info["tier"]),
             service_max_replicas=int(info["max_replicas"]),
             deployed_versions=tuple(d["version"] for d in self.env.deployments(service)),

@@ -31,6 +31,7 @@ class Facts:
     proposals_so_far: int
     # The actions the cited runbook recommends; None if no runbook was cited or it doesn't exist.
     runbook_actions: tuple[str, ...] | None = None
+    runbook_services: tuple[str, ...] = ()  # the services it is written for; empty: any
 
 
 @dataclass(frozen=True)
@@ -128,6 +129,9 @@ class Policy:
         if proposal.action not in facts.runbook_actions:
             recommended = ", ".join(facts.runbook_actions) or "no automated action"
             return f"{proposal.runbook_id} recommends {recommended}; not {proposal.action}. A person must approve"
+        if facts.runbook_services and proposal.service not in facts.runbook_services:
+            written_for = ", ".join(facts.runbook_services)
+            return f"{proposal.runbook_id} is written for {written_for}, not {proposal.service}. A person must approve"
         return None
 
     def _decide(self, decision: str, risk: Risk, reasons: list[str]) -> PolicyDecision:
