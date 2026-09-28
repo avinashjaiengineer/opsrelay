@@ -59,6 +59,19 @@ class Settings(BaseSettings):
     # reconcile with the environment) once the lease expires.
     execution_lease_seconds: float = 300
 
+    # Durable background work (opsrelay.jobs): a job's lease is renewed while it runs; if its
+    # worker stops, another takes the job over once the lease expires. A job that fails
+    # `job_max_attempts` times is dead-lettered and its incident handed to a person.
+    job_lease_seconds: float = 900
+    job_max_attempts: int = 3
+    worker_poll_seconds: float = 1.0
+    recovery_interval_seconds: float = 30
+
+    # Shared secret the coordinator presents to specialist A2A servers (Authorization: Bearer),
+    # for deployments without SigV4 (local, EC2, Docker Compose). `opsrelay up` generates one per
+    # run. May be a Secrets Manager ARN (see opsrelay.secrets).
+    a2a_token: str = ""
+
     # Remediation policy (see opsrelay/policies.yaml). Empty: the built-in policy.
     policy_file: str = ""
 

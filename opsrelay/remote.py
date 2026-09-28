@@ -16,8 +16,9 @@ from botocore.awsrequest import AWSRequest
 from strands.agent.a2a_agent import A2AAgent
 from strands.agent.agent_result import AgentResult
 
+from . import secrets
 from .agents.factory import Invoker
-from .config import Role
+from .config import Role, get_settings
 
 SESSION_HEADER = "X-Amzn-Bedrock-AgentCore-Runtime-Session-Id"
 
@@ -55,7 +56,10 @@ def resolve_endpoint(endpoint: str) -> tuple[str, httpx.Auth | None, dict[str, s
         # AgentCore requires a session id of at least 33 characters.
         headers = {SESSION_HEADER: f"opsrelay-{uuid.uuid4().hex}"}
         return build_runtime_url(endpoint), AgentCoreSigV4(region), headers
-    return endpoint.rstrip("/"), None, {}
+    # Plain HTTP(S) A2A servers (local, EC2, Docker Compose) authenticate the coordinator by a
+    # shared bearer token (see opsrelay.a2a_auth).
+    token = secrets.resolve(get_settings().a2a_token)
+    return endpoint.rstrip("/"), None, ({"Authorization": f"Bearer {token}"} if token else {})
 
 
 def reply_text(result: AgentResult) -> str:

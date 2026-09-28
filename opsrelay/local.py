@@ -10,6 +10,7 @@ import threading
 import time
 import webbrowser
 from importlib.resources import files
+from secrets import token_urlsafe
 
 import httpx
 import uvicorn
@@ -53,14 +54,16 @@ def run_local_stack(
     urls = {role: f"http://127.0.0.1:{specialist_base_port + i}" for i, role in enumerate(SPECIALISTS)}
     shown_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host  # noqa: S104 - a bind address, not a URL
 
-    # Point the coordinator at the specialists over A2A before anything reads the settings.
+    # Point the coordinator at the specialists over A2A before anything reads the settings, and
+    # give this run its own A2A token so the specialists' ports only answer the coordinator.
     os.environ["OPSRELAY_SPECIALIST_TRANSPORT"] = "a2a"
+    os.environ.setdefault("OPSRELAY_A2A_TOKEN", token_urlsafe(32))
     for role, url in urls.items():
         os.environ[f"OPSRELAY_{role.upper()}_ENDPOINT"] = url
     get_settings.cache_clear()
     get_store.cache_clear()
 
-    from .runtime.coordinator import app
+    from .runtime.coordinator import app, start_worker
     from .runtime.specialist import build_app
 
     for role, url in urls.items():
@@ -86,6 +89,7 @@ def run_local_stack(
     print(f"\n  Dashboard:  {dashboard_url}\n")
     print(f"Or from another terminal:  opsrelay --url http://{shown_host}:{port} simulate bad-deploy\n")
     add_dashboard(app)
+    start_worker()  # runs queued work, and resumes anything interrupted by a previous stop
     if open_browser:
         threading.Timer(1.5, webbrowser.open, args=[dashboard_url]).start()
     app.run(port=port, host=host)

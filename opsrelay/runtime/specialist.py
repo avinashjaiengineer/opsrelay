@@ -12,6 +12,7 @@ from bedrock_agentcore.runtime.a2a import build_a2a_app
 from strands.multiagent.a2a import A2AServer, StrandsA2AExecutor
 
 from .. import __version__
+from ..a2a_auth import protect
 from ..agents import build_specialist
 from ..agents.prompts import DESCRIPTIONS
 from ..config import SPECIALISTS, Role
@@ -42,8 +43,10 @@ def build_app(role: Role, public_url: str | None = None):
     card: AgentCard = A2AServer(
         agent_factory=factory, http_url=url, serve_at_root=True, version=__version__, skills=[skill]
     ).public_agent_card
-    return build_a2a_app(
-        StrandsA2AExecutor(agent_factory=factory, enable_a2a_compliant_streaming=True), card, runtime_url=url
+    return protect(
+        build_a2a_app(
+            StrandsA2AExecutor(agent_factory=factory, enable_a2a_compliant_streaming=True), card, runtime_url=url
+        )
     )
 
 

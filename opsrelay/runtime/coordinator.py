@@ -15,9 +15,9 @@ Payloads are JSON objects with an "action":
     {"action": "test_policy", "action_name": "scale_service", "service": "...", "parameters": {"replicas": 4}}
     {"action": "get_contracts"}                               # lifecycle, agent contracts, transition owners
 
-Add "async": true to open_incident, simulate or decide_approval to return at once and let the
-agents work in the background (the runtime reports HealthyBusy until they finish); poll with
-get_incident.
+Add "async": true to open_incident, simulate or decide_approval to return at once: the work is
+queued as a durable job (opsrelay.jobs) and a worker runs it (the runtime reports HealthyBusy
+while it does). A job survives a restart. Poll with get_incident.
 """
 
 import logging
@@ -27,6 +27,7 @@ from typing import Any
 from bedrock_agentcore.runtime import BedrockAgentCoreApp
 from pydantic import ValidationError
 
+from .. import jobs
 from ..approvals import ApprovalError
 from ..lifecycle import IllegalTransition
 from ..service import IncidentService, decision_prompt, new_incident_prompt
@@ -52,18 +53,19 @@ def _require(payload: dict[str, Any], *keys: str) -> None:
         raise ValueError(f"missing field(s): {', '.join(missing)}")
 
 
-def _in_background(name: str, fn, **kwargs) -> None:  # noqa: ANN001
-    task_id = app.add_async_task(name, {k: str(v)[:100] for k, v in kwargs.items()})
+def start_worker():  # noqa: ANN201
+    """Start this process's job worker, reporting HealthyBusy to AgentCore while a job runs."""
+    return jobs.ensure_worker(
+        service,
+        on_busy=lambda job: app.add_async_task(job["action"], {"incident_id": job["incident_id"], "job": job["id"]}),
+        on_idle=lambda task_id: task_id is not None and app.complete_async_task(task_id),
+    )
 
-    def run() -> None:
-        try:
-            fn(**kwargs)
-        except Exception:  # noqa: BLE001 - logged and recorded in the incident audit log
-            log.exception("background %s failed", name)
-        finally:
-            app.complete_async_task(task_id)
 
-    threading.Thread(target=run, name=f"opsrelay-{name}", daemon=True).start()
+def _in_background(incident_id: str, prompt: str) -> None:
+    """Queue coordination as a durable job; the worker runs it, and a restart doesn't lose it."""
+    jobs.enqueue(service().store, incident_id, prompt)
+    start_worker()
 
 
 def handle(payload: dict[str, Any]) -> dict[str, Any]:
@@ -84,12 +86,7 @@ def handle(payload: dict[str, Any]) -> dict[str, Any]:
             opened = svc.open_incident(**kwargs, run=False)
             incident = opened["incident"]
             if not opened.get("deduplicated"):
-                _in_background(
-                    "coordinate",
-                    svc.run_coordinator,
-                    incident_id=incident["id"],
-                    prompt=new_incident_prompt(incident),
-                )
+                _in_background(incident["id"], new_incident_prompt(incident))
             return {"incident": incident, "status": "processing"}
         return svc.open_incident(**kwargs)
 
@@ -98,12 +95,7 @@ def handle(payload: dict[str, Any]) -> dict[str, Any]:
         if background:
             result = svc.simulate(payload["scenario"], run=False)
             incident = result["incident"]
-            _in_background(
-                "coordinate",
-                svc.run_coordinator,
-                incident_id=incident["id"],
-                prompt=new_incident_prompt(incident),
-            )
+            _in_background(incident["id"], new_incident_prompt(incident))
             return {**result, "status": "processing"}
         return svc.simulate(payload["scenario"])
 
@@ -120,12 +112,7 @@ def handle(payload: dict[str, Any]) -> dict[str, Any]:
         if background:
             decided = svc.decide_approval(**kwargs, run=False)
             approval = decided["approval"]
-            _in_background(
-                "continue",
-                svc.run_coordinator,
-                incident_id=approval["incident_id"],
-                prompt=decision_prompt(approval),
-            )
+            _in_background(approval["incident_id"], decision_prompt(approval))
             return {**decided, "status": "processing"}
         return svc.decide_approval(**kwargs)
 
@@ -171,4 +158,5 @@ def invoke(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def serve(port: int = 8080) -> None:
+    start_worker()  # resumes queued or interrupted work after a restart
     app.run(port=port)

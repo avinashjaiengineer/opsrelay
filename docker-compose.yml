@@ -19,6 +19,8 @@ x-agent: &agent
     OPSRELAY_DYNAMODB_ENDPOINT: http://dynamodb:8000
     AWS_REGION: ${AWS_REGION:-us-east-1}
     AWS_DEFAULT_REGION: ${AWS_REGION:-us-east-1}
+    # The coordinator authenticates to the specialists with this token. Set your own in .env.
+    OPSRELAY_A2A_TOKEN: ${OPSRELAY_A2A_TOKEN:-compose-local-a2a-token}
   depends_on:
     create-table:
       condition: service_completed_successfully
