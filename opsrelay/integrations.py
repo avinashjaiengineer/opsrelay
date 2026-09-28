@@ -415,6 +415,7 @@ class SlackSocket:
 
         client.send_socket_mode_response(SocketModeResponse(envelope_id=request.envelope_id))  # ack within 3 s
         payload = request.payload if isinstance(request.payload, dict) else {}
+        log.warning("Slack Socket Mode: %s (%s)", request.type, payload.get("type"))
         if request.type == "interactive" and payload.get("type") == "block_actions":
             import threading
 

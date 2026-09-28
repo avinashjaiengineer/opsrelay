@@ -143,6 +143,7 @@ def _decide_from_slack(approval_id: str, approve: bool, principal: auth.Principa
 
 def _slack_click(payload: dict[str, Any]) -> None:
     text = integrations.handle_slack_action(payload, _decide_from_slack)
+    log.warning("Slack click by %s: %s", (payload.get("user") or {}).get("id"), text)
     integrations.respond_in_slack(payload.get("response_url", ""), text)
 
 
@@ -154,6 +155,7 @@ async def slack_actions(request: Request) -> JSONResponse:
     if not integrations.verify_slack(
         body, headers.get("x-slack-request-timestamp", ""), headers.get("x-slack-signature", "")
     ):
+        log.warning("Slack action over HTTPS refused: invalid or missing signature (is the signing secret set?)")
         return JSONResponse({"error": "invalid Slack signature"}, status_code=401)
     payload = integrations.parse_slack_form(body)
     threading.Thread(target=_slack_click, args=(payload,), name="slack-action", daemon=True).start()
