@@ -14,6 +14,7 @@ Payloads are JSON objects with an "action":
     {"action": "get_policy"}                                  # the loaded remediation policy
     {"action": "test_policy", "action_name": "scale_service", "service": "...", "parameters": {"replicas": 4}}
     {"action": "get_contracts"}                               # lifecycle, agent contracts, transition owners
+    {"action": "integrations"}                                # which are on; Slack Socket Mode connected?
     {"action": "search_runbooks", "query": "...", "category": "...", "service": "..."}
     {"action": "similar_incidents", "incident_id": "inc-..."} or {"action": "similar_incidents", "query": "..."}
     {"action": "get_postmortem", "incident_id": "inc-..."}   # Markdown; a draft for escalated incidents
@@ -283,6 +284,9 @@ def handle(payload: dict[str, Any]) -> dict[str, Any]:
         return svc.recover()
     if action == "get_metrics":
         return {"metrics": ops_metrics.compute(svc.store, int(payload.get("limit", 200)))}
+    if action == "integrations":
+        connected = bool(_slack_socket and _slack_socket.client and _slack_socket.client.is_connected())
+        return {"enabled": sorted(integrations.enabled()), "slack_socket_mode": connected}
     if action == "get_contracts":
         return svc.contracts()
     if action == "replay_incident":  # on the configured model; `opsrelay replay --model` locally to compare
