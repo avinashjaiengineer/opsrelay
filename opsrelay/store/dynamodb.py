@@ -4,11 +4,12 @@ Items (each keeps the record as a JSON string in `doc`, so no float/Decimal conv
 
     pk              sk                      gsi1pk      gsi1sk
     INC#<id>        META                    INCIDENT    <created_at>
-    INC#<id>        EVT#<created_at>#<id>   -           -
+    INC#<id>        EVT#<created_at>#<seq>#<id>  -      -
     APR#<id>        META                    APPROVAL    <created_at>
     SVC#<name>      META                    SERVICE     <name>
 """
 
+import itertools
 import json
 from typing import Any
 
@@ -19,6 +20,9 @@ from botocore.exceptions import ClientError
 from .base import Record, Store
 
 GSI = "gsi1"
+
+# Orders events written in the same millisecond by this process; created_at alone ties.
+_event_seq = itertools.count()
 
 
 def _resource(region: str | None, endpoint: str | None) -> Any:
@@ -93,7 +97,8 @@ class DynamoStore(Store):
 
     # Events
     def append_event(self, event: Record) -> None:
-        self._put(f"INC#{event['incident_id']}", f"EVT#{event['created_at']}#{event['id']}", event)
+        sk = f"EVT#{event['created_at']}#{next(_event_seq):012d}#{event['id']}"
+        self._put(f"INC#{event['incident_id']}", sk, event)
 
     def list_events(self, incident_id: str) -> list[Record]:
         return self._query(Key("pk").eq(f"INC#{incident_id}") & Key("sk").begins_with("EVT#"))

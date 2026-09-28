@@ -44,6 +44,9 @@ Every delegation, tool call, human decision and executed action goes into an app
 
 ## Quick start (no AWS account, no Docker)
 
+New here? [docs/WALKTHROUGH.md](docs/WALKTHROUGH.md) takes you step by step through installing,
+resolving an incident in the dashboard and from the CLI, and running the tests.
+
 You only need Python 3.11 or later. Offline mode runs the same Strands agents, tools and A2A
 wiring with a scripted model instead of an LLM.
 
@@ -216,14 +219,14 @@ opsrelay/
   cli.py         `opsrelay` command
 infra/           AWS CDK app (AgentCore runtimes, DynamoDB, IAM)
 tests/           workflow, A2A, runtime contract, stores (SQLite + moto DynamoDB), approvals, agents, infra
-docs/            ARCHITECTURE.md: design decisions and next steps
+docs/            WALKTHROUGH.md: hands-on tour; ARCHITECTURE.md: design decisions and next steps
 ```
 
 ## Development
 
 ```bash
 pip install -e ".[dev]" aws-cdk-lib constructs
-pytest            # 53 tests, fully offline
+pytest            # 50 tests, fully offline
 ruff check . && ruff format --check .
 ```
 
