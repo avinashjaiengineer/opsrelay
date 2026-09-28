@@ -160,6 +160,11 @@ def _latest_result(role: str, events: list[Record]) -> dict | None:
     return None
 
 
+CORRECTION = (
+    "Incident {incident_id}: your previous reply did not complete your task: {problem}. Call your submit "
+    "tool now (fix any fields it rejected), based on your findings. Your previous reply was:\n{reply}"
+)
+
 REMEDIATION_TASK = (
     "Incident {incident_id}: propose one remediation for the diagnosis on the incident, following the "
     "runbook that fits it. Choose the action yourself from the diagnosis and the runbooks; actions "
@@ -193,7 +198,7 @@ def _delegation_tool(role: Role, invoke: Invoker, store: Store):
                 status = Status.TRIAGING
             except IllegalTransition as e:
                 return json.dumps({"error": str(e)})
-        problem = contract.check_dispatch(status)
+        problem = contract.check_dispatch(status, incident)
         if problem:
             store.record(
                 incident_id,
@@ -255,6 +260,19 @@ def _delegation_tool(role: Role, invoke: Invoker, store: Store):
         events = new_events()
         store.record(incident_id, role, "a2a.response", reply[:2000], {**agent_meta(role)})
         problem = contract.postcondition(before, after, events)
+        if problem:  # one corrective turn: models often answer in prose instead of calling the submit tool
+            store.record(
+                incident_id, "platform", "contract.retry", f"{role}: {problem}; asking it to submit", {"agent": role}
+            )
+            try:
+                reply = await invoke(CORRECTION.format(incident_id=incident_id, problem=problem, reply=reply[:3000]))
+            except Exception as e:  # noqa: BLE001 - the violation below stands
+                log.warning("corrective call to %s failed: %s", role, e)
+            else:
+                store.record(incident_id, role, "a2a.response", reply[:2000], {**agent_meta(role)})
+            after = store.get_incident(incident_id) or before
+            events = new_events()
+            problem = contract.postcondition(before, after, events)
         telemetry.count("agent_calls_total", agent=role, outcome="contract_violation" if problem else "ok")
         if problem:
             store.record(

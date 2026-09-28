@@ -59,3 +59,36 @@ def test_remediation_takes_its_task_from_the_platform_not_the_coordinator(store,
     assert message == factory.REMEDIATION_TASK.format(incident_id=incident["id"])
     requests = [e["message"] for e in store.list_events(incident["id"]) if e["kind"] == "a2a.request"]
     assert any(r.startswith("-> remediation:") for r in requests)  # what the coordinator asked is still audited
+
+
+def test_an_agent_that_answers_in_prose_is_asked_once_to_submit(service, monkeypatch):
+    real = offline.POLICIES["diagnostics"]
+
+    def prose_first(script):  # like Nova: writes the diagnosis as text instead of submitting it
+        if "did not complete your task" not in script.prompt:
+            return "Root cause: memory leak in the session cache. Confidence high."
+        return real(script)
+
+    monkeypatch.setitem(offline.POLICIES, "diagnostics", prose_first)
+    incident = service.simulate("memory-leak")["incident"]
+    assert incident["status"] == "awaiting_approval"
+    kinds = [e["kind"] for e in service.store.list_events(incident["id"])]
+    assert "contract.retry" in kinds and "contract.violation" not in kinds
+
+
+def test_remediation_is_not_dispatched_without_a_diagnosis(service):
+    from opsrelay.lifecycle import Status, transition
+
+    incident = service.open_incident("something", run=False)["incident"]
+    transition(service.store, incident["id"], Status.TRIAGING, actor="coordinator")
+    transition(service.store, incident["id"], Status.INVESTIGATING, actor="triage")
+    ask = next(
+        t
+        for t in factory.build_coordinator(service.store, service.env).tool_registry.registry.values()
+        if t.tool_name == "ask_remediation"
+    )
+    import asyncio
+    import json
+
+    result = json.loads(asyncio.run(ask._tool_func(incident_id=incident["id"], request="restart it")))
+    assert "needs the incident's diagnosis first" in result["error"]

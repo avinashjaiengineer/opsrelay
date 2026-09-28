@@ -64,7 +64,7 @@ def _acting(store: Store, incident_id: str, role: str) -> tuple[Record | None, s
     incident = store.get_incident(incident_id)
     if incident is None:
         return None, _error(f"Unknown incident {incident_id}")
-    problem = CONTRACTS[role].check_dispatch(status_of(incident))
+    problem = CONTRACTS[role].check_dispatch(status_of(incident), incident)
     return (None, _error(problem)) if problem else (incident, None)
 
 

@@ -7,7 +7,8 @@ A contract states:
   communications can't touch infrastructure, nobody can execute),
 - transitions: the only lifecycle moves its tools may make (checked in lifecycle.transition),
 - results: the typed models it submits its output as (validated by pydantic in its tools),
-- postcondition: what must be true when it returns (checked after the call).
+- postcondition: what must be true when it returns (checked after the call),
+- needs: incident fields that must exist before it is dispatched (remediation needs a diagnosis).
 
 A dispatch outside acts_in, or a return that breaks the postcondition, is refused and recorded as
 a `contract.violation` event. PLATFORM_TRANSITIONS are the moves only platform code makes: after
@@ -49,11 +50,15 @@ class AgentContract:
     transitions: frozenset[Transition]
     results: tuple[type[BaseModel], ...]
     postcondition: Postcondition
+    needs: tuple[str, ...] = ()
 
-    def check_dispatch(self, status: Status) -> str | None:
+    def check_dispatch(self, status: Status, incident: Record | None = None) -> str | None:
         if status not in self.acts_in:
             allowed = ", ".join(sorted(self.acts_in))
             return f"the {self.role} agent acts only on incidents that are {allowed}; this one is {status}"
+        missing = [f for f in self.needs if incident is not None and not incident.get(f)]
+        if missing:
+            return f"the {self.role} agent needs the incident's {', '.join(missing)} first; this incident has none"
         return None
 
     def describe(self) -> dict:
@@ -64,6 +69,7 @@ class AgentContract:
             "tools": sorted(self.tools),
             "transitions": sorted(f"{a} -> {b}" for a, b in self.transitions),
             "results": [m.__name__ for m in self.results],
+            "needs": list(self.needs),
         }
 
 
@@ -158,6 +164,7 @@ CONTRACTS: dict[str, AgentContract] = {
         transitions=frozenset({(S.INVESTIGATING, S.AWAITING_APPROVAL)}),
         results=(RemediationProposal, RemediationDecline),
         postcondition=_remediation_done,
+        needs=("diagnosis",),
     ),
     "verification": AgentContract(
         role="verification",
