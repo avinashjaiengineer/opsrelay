@@ -12,6 +12,11 @@ When an alert fires, a coordinator agent hands the incident to specialist agents
 
 Nothing touches your infrastructure until a person approves it.
 
+![OpsRelay dashboard: an alert fires, the agents investigate, a person approves, the incident is resolved](docs/images/workflow.gif)
+
+See the [user guide](docs/USER_GUIDE.md) for the whole workflow in screenshots, why it's useful,
+and ideas for improving it.
+
 ```
  alert / API / CLI
         │
@@ -38,7 +43,7 @@ Nothing touches your infrastructure until a person approves it.
 3. **Diagnose.** Diagnostics checks metrics, logs and recent deployments and records a root cause with evidence.
 4. **Propose.** Remediation finds the runbook and *proposes* an action (rollback, restart, scale, flush cache). The proposal becomes a **pending approval**. The risk is rated from the action and the service tier.
 5. **Human gate.** A person approves or rejects it. Only then does the platform, not the agent, execute the action.
-6. **Verify and close.** Remediation checks that the service recovered. Communications posts internal and customer updates, writes a blameless postmortem and resolves the incident. A rejection, a failed action or no recovery **escalates** the incident to the owning team.
+6. **Verify and close.** Remediation checks that the service recovered. Communications posts internal and customer updates, writes a blameless postmortem and resolves the incident. After a rejection, a failed action or no recovery, the coordinator may ask remediation for one alternative (a rejection note guides it); if that doesn't work either, it **escalates** the incident to the owning team.
 
 Every delegation, tool call, human decision and executed action goes into an append-only audit log, with who did it.
 
@@ -225,7 +230,9 @@ opsrelay/
   cli.py         `opsrelay` command
 infra/           AWS CDK app (AgentCore runtimes, DynamoDB, IAM)
 tests/           workflow, A2A, runtime contract, stores (SQLite + moto DynamoDB), approvals, agents, infra
-docs/            WALKTHROUGH.md: hands-on tour; ARCHITECTURE.md: design decisions and next steps
+docs/            USER_GUIDE.md: the workflow in screenshots; WALKTHROUGH.md: hands-on tour;
+                 ARCHITECTURE.md: design decisions and next steps
+deploy/ec2/      user data to run OpsRelay on an EC2 instance
 ```
 
 ## Development

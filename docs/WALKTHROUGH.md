@@ -4,6 +4,9 @@ A hands-on tour: install OpsRelay, watch the agents resolve an incident in the d
 the same flow from the CLI, and run the tests. Everything here runs offline on your own machine:
 no AWS account, no Docker, no API key.
 
+Want to see it before installing? The [user guide](USER_GUIDE.md) has the whole workflow in
+screenshots.
+
 ## 1. Install
 
 You need Python 3.11 or later.
@@ -70,8 +73,9 @@ If port 8080 is in use: `opsrelay up --port 8090`, then open http://127.0.0.1:80
    - Click **Approve**: the platform runs the rollback, remediation verifies the service
      recovered, and communications posts updates and writes the **Postmortem**. Status ends at
      **resolved**.
-   - Click **Reject** (optionally give a reason): the incident is **escalated** to the owning
-     team and nothing is executed.
+   - Click **Reject** (optionally give a reason): nothing is executed, and the incident is
+     **escalated** to the owning team. With a real model, the agents may first propose one
+     alternative, guided by your reason (see the [user guide](USER_GUIDE.md#6-when-the-agents-get-it-wrong)).
 5. **Tick "show tool calls"** to see every tool each agent called and its input.
 
 Try the other two scenarios the same way:
