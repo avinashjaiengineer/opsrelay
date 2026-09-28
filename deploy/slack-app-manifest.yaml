@@ -1,0 +1,35 @@
+# Slack app for OpsRelay: approval requests with Approve / Reject buttons.
+#
+# 1. https://api.slack.com/apps -> Create New App -> From a manifest -> pick your workspace,
+#    paste this file (replace YOUR-OPSRELAY-URL with your HTTPS address), Create.
+# 2. Install to Workspace. Copy "Bot User OAuth Token" (xoxb-...) and, under Basic Information,
+#    the "Signing Secret".
+# 3. Store both in AWS Secrets Manager (console -> Store a new secret -> Other type -> Plaintext):
+#      opsrelay/slack-bot-token        the xoxb-... token
+#      opsrelay/slack-signing-secret   the signing secret
+# 4. In Slack, invite the bot to your incidents channel (/invite @OpsRelay) and copy the channel
+#    id (channel name -> View channel details -> bottom of the About tab).
+# 5. Set on the coordinator (see README, Integrations):
+#      OPSRELAY_SLACK_BOT_TOKEN=secretsmanager:opsrelay/slack-bot-token
+#      OPSRELAY_SLACK_SIGNING_SECRET=secretsmanager:opsrelay/slack-signing-secret
+#      OPSRELAY_SLACK_CHANNEL=C0123456789
+#      OPSRELAY_SLACK_USERS=<a YAML file or secret mapping Slack member ids to OpsRelay users>
+display_information:
+  name: OpsRelay
+  description: AI incident response. Approve or reject remediations from Slack.
+  background_color: "#1f2937"
+features:
+  bot_user:
+    display_name: OpsRelay
+    always_online: true
+oauth_config:
+  scopes:
+    bot:
+      - chat:write
+settings:
+  interactivity:
+    is_enabled: true
+    request_url: https://YOUR-OPSRELAY-URL/integrations/slack/actions
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false

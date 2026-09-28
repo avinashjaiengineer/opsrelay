@@ -153,6 +153,29 @@ On macOS / Linux, use `export NAME=value` instead of `$env:NAME="value"`.
 
 If you have Docker, `docker compose up --build` runs the same topology in containers with DynamoDB Local.
 
+## Run on a single EC2 instance
+
+[deploy/ec2/user-data.sh](deploy/ec2/user-data.sh) installs OpsRelay as a systemd service
+(`opsrelay up`) with Amazon Nova on Bedrock. For data that survives the instance and a dashboard on
+HTTPS:
+
+1. **DynamoDB.** Copy the existing SQLite data (audit chains stay verifiable), then point the
+   service at the table:
+   ```bash
+   opsrelay migrate --from /opt/opsrelay/opsrelay.db --to-table opsrelay    # creates the table if missing
+   # systemd drop-in: OPSRELAY_STORE=dynamodb, OPSRELAY_DYNAMODB_TABLE=opsrelay
+   ```
+   Turn on point-in-time recovery and deletion protection on the table, and give the instance
+   role item access to it (Get/Put/Update/Delete/Query/ConditionCheck on the table and its index).
+2. **HTTPS.** Put an API Gateway HTTP API (an `HTTP_PROXY` integration to the instance's port 8080)
+   or CloudFront in front, with an Elastic IP on the instance. Have the front door add an
+   `x-opsrelay-origin` header with a random value, and set `OPSRELAY_ORIGIN_SECRET` to it (a Secrets
+   Manager reference works): requests that bypass the front door are refused. Set
+   `OPSRELAY_PUBLIC_URL` to the HTTPS address so Slack, Teams, PagerDuty and Jira link to it.
+   API Gateway cuts requests off at 30 s; the dashboard uses `async` for anything longer.
+3. **Slack.** Create the app from [deploy/slack-app-manifest.yaml](deploy/slack-app-manifest.yaml)
+   with your HTTPS address; see Integrations below.
+
 ## Deploy to Amazon Bedrock AgentCore
 
 **Prerequisites:**
@@ -242,6 +265,7 @@ Environment variables, prefixed `OPSRELAY_` (see `opsrelay/config.py`):
 | `EMBEDDINGS` | `auto` | `bedrock` (Amazon Titan Text Embeddings v2), `lexical` (offline), or `auto`: Titan when the agents run on Bedrock |
 | `RUNBOOK_DIR` | | A folder of your own Markdown runbooks (same id overrides a built-in) |
 | `PUBLIC_URL` | | The dashboard's address, linked from Slack, Teams, PagerDuty and Jira |
+| `ORIGIN_SECRET` | | Behind API Gateway or CloudFront: the `x-opsrelay-origin` value requests must carry |
 | `SLACK_BOT_TOKEN`, `SLACK_CHANNEL`, `SLACK_SIGNING_SECRET`, `SLACK_USERS` | | Slack messages and Approve/Reject buttons (see Integrations) |
 | `TEAMS_WEBHOOK_URL` | | Microsoft Teams Workflows or incoming-webhook URL |
 | `PAGERDUTY_ROUTING_KEY` | | PagerDuty Events API v2 integration key |
@@ -464,14 +488,14 @@ tests/           lifecycle, contracts, policy, approvals, jobs, auth, connectors
                  agents, infra, knowledge, memory, evals, integrations
 docs/            USER_GUIDE.md: the workflow in screenshots; WALKTHROUGH.md: hands-on tour;
                  ARCHITECTURE.md: design decisions and next steps
-deploy/          EC2 user data; an example service catalog
+deploy/          EC2 user data; an example service catalog; a Slack app manifest
 ```
 
 ## Development
 
 ```bash
 pip install -e ".[dev]" aws-cdk-lib constructs
-pytest            # 186 tests, fully offline
+pytest            # 199 tests, fully offline
 ruff check . && ruff format --check .
 ```
 
