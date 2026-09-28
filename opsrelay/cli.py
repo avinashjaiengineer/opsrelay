@@ -214,6 +214,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--target-version")
     p.add_argument("--confidence", type=float, default=0.95, help="diagnosis confidence (default 0.95)")
     p.add_argument("--runbook", help="the runbook the proposal cites (default: one that recommends the action)")
+    p = sub.add_parser("postmortem", help="an incident's postmortem as Markdown (a draft if it was escalated)")
+    p.add_argument("incident_id")
+    p.add_argument("-o", "--output", help="write to this file instead of printing")
+    p = sub.add_parser("similar", help="past incidents like an incident (inc-...) or like a description")
+    p.add_argument("target", help="an incident id, or a description of the symptoms")
     p = sub.add_parser("runbooks", help='list runbooks, or search them: opsrelay runbooks "pods OOMKilled"')
     p.add_argument("query", nargs="?", default="")
     p.add_argument("--category")
@@ -340,6 +345,11 @@ def main(argv: list[str] | None = None) -> int:
             "confidence": args.confidence,
             "runbook_id": args.runbook,
         }
+    elif args.cmd == "postmortem":
+        payload = {"action": "get_postmortem", "incident_id": args.incident_id}
+    elif args.cmd == "similar":
+        by_id = args.target.startswith("inc-") and " " not in args.target
+        payload = {"action": "similar_incidents", ("incident_id" if by_id else "query"): args.target}
     elif args.cmd == "runbooks":
         payload = {"action": "search_runbooks", "query": args.query, "category": args.category, "service": args.service}
     elif args.cmd == "contracts":
@@ -390,6 +400,22 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{d['decision']}  risk={d['risk']}  requires_human={d['requires_human']}  ({d['policy_version']})")
         for reason in d["reasons"]:
             print(f"  - {reason}")
+    elif args.cmd == "postmortem":
+        if args.output:
+            Path(args.output).write_text(result["markdown"], encoding="utf-8")
+            print(f"Wrote {args.output}" + (" (a draft: the incident was escalated)" if result["generated"] else ""))
+        else:
+            print(result["markdown"])
+    elif args.cmd == "similar":
+        if not result["similar"]:
+            print("No similar past incidents.")
+        for m in result["similar"]:
+            print(f"{m['incident_id']}  {m['similarity']:.0%}  [{m['outcome']}]  {m['title']}")
+            print(f"    cause: {m.get('root_cause') or '-'}")
+            print(
+                f"    action: {m.get('action') or '-'}"
+                + (f" (runbook {m['runbook_id']})" if m.get("runbook_id") else "")
+            )
     elif args.cmd == "runbooks":
         for rb in result["runbooks"]:
             score = f"  score {rb['score']:.2f}" if "score" in rb else ""

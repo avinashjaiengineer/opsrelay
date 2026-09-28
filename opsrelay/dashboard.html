@@ -110,6 +110,7 @@
   ul.earlier li { padding: 2px 0; }
   button.link { border: 0; background: none; color: var(--accent); padding: 8px 0 0; }
   button.link:hover { text-decoration: underline; }
+  .similar { margin: 0; padding-left: 18px; } .similar li { margin-bottom: 8px; }
   .audit { font-weight: 600; padding: 8px 12px; border-radius: 8px; margin-bottom: 8px; }
   .tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
   .tile { border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; }
@@ -396,6 +397,23 @@ function auditCard(i, audit, events) {
   return card("Audit trail", body);
 }
 
+function similarCard(similar) {
+  if (!similar || !similar.length) return "";
+  const rows = similar.map((m) => `<li><strong>${esc(m.incident_id)}</strong> <span class="kind">${Math.round(m.similarity * 100)}% similar</span> ${chip(m.outcome)}
+    <div>${esc(m.title)}</div>
+    <div class="kind">Cause: ${esc(m.root_cause || "not determined")} · Action: ${esc(m.action || "none")}${m.runbook_id ? ` (${esc(m.runbook_id)})` : ""}${(m.rejected || []).length ? ` · Rejected: ${m.rejected.map((r) => esc(r.action + (r.note ? ` (“${r.note}”)` : ""))).join(", ")}` : ""}</div></li>`);
+  return card("Similar past incidents", `<ul class="similar">${rows.join("")}</ul>`);
+}
+
+const drafts = {};
+
+function postmortemCard(i) {
+  if (i.postmortem) return `<section class="card"><h2>Postmortem</h2><pre>${esc(i.postmortem)}</pre></section>`;
+  const draft = drafts[i.id];
+  if (!draft) return "";
+  return `<section class="card"><h2>Postmortem <span class="kind">draft from the record: the incident was escalated</span></h2><pre>${esc(draft)}</pre></section>`;
+}
+
 function renderDetail(data, audit) {
   const i = data.incident;
   const warnings = data.events.filter((e) => e.kind === "contract.violation" || e.kind === "agent.unavailable");
@@ -413,10 +431,11 @@ function renderDetail(data, audit) {
     ${warnings.map((w) => `<section class="warning">⚠ <strong>${esc(w.kind === "agent.unavailable" ? "Agent unavailable" : "Contract violation")}</strong> · ${esc(w.message)}</section>`).join("")}
     ${summaryCard(i)}
     ${diagnosisCard(i)}
+    ${similarCard(data.similar)}
     ${remediationCard(i, data.approvals)}
     ${timelineCard(data.events)}
     ${auditCard(i, audit, data.events)}
-    ${i.postmortem ? `<section class="card"><h2>Postmortem</h2><pre>${esc(i.postmortem)}</pre></section>` : ""}`;
+    ${postmortemCard(i)}`;
 }
 
 async function refresh() {
@@ -431,6 +450,10 @@ async function refresh() {
         call({action: "get_incident", incident_id: selected}),
         call({action: "verify_audit", incident_id: selected}).catch(() => null),
       ]);
+      const inc = detail.incident;
+      if (inc.status === "escalated" && !inc.postmortem && !(inc.id in drafts)) {
+        drafts[inc.id] = (await call({action: "get_postmortem", incident_id: inc.id}).catch(() => ({}))).markdown || "";
+      }
       renderDetail(detail, audit);
     }
     $("conn").textContent = "live"; $("conn").className = "chip ok";

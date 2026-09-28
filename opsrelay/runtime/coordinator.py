@@ -15,6 +15,8 @@ Payloads are JSON objects with an "action":
     {"action": "test_policy", "action_name": "scale_service", "service": "...", "parameters": {"replicas": 4}}
     {"action": "get_contracts"}                               # lifecycle, agent contracts, transition owners
     {"action": "search_runbooks", "query": "...", "category": "...", "service": "..."}
+    {"action": "similar_incidents", "incident_id": "inc-..."} or {"action": "similar_incidents", "query": "..."}
+    {"action": "get_postmortem", "incident_id": "inc-..."}   # Markdown; a draft for escalated incidents
     {"action": "whoami"}                                      # the authenticated caller and roles
     {"action": "ingest_alert", "message": {...}}              # CloudWatch alarm event / SNS / Alertmanager
     {"action": "run_job", "job_id": "job-..."}                # run one queued job now (the SQS worker path)
@@ -44,7 +46,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from .. import approvals, auth, jobs, ops_metrics, policy_admin, rbac, secrets
+from .. import auth, jobs, ops_metrics, policy_admin, rbac, secrets
 from ..approvals import ApprovalError
 from ..config import get_settings
 from ..intake.alerts import UnrecognizedAlert
@@ -231,11 +233,20 @@ def handle(payload: dict[str, Any]) -> dict[str, Any]:
         _require(payload, "job_id")
         return jobs.Worker(service).run_job(payload["job_id"])
     if action == "recover":
-        return {"remediations": approvals.recover(svc.store, svc.env), "requeued_jobs": jobs.requeue_expired(svc.store)}
+        return svc.recover()
     if action == "get_metrics":
         return {"metrics": ops_metrics.compute(svc.store, int(payload.get("limit", 200)))}
     if action == "get_contracts":
         return svc.contracts()
+    if action == "get_postmortem":
+        _require(payload, "incident_id")
+        return svc.postmortem(payload["incident_id"])
+    if action == "similar_incidents":
+        return {
+            "similar": svc.similar_incidents(
+                payload.get("query") or "", payload.get("incident_id"), int(payload.get("limit", 5))
+            )
+        }
     if action == "search_runbooks":
         return {
             "runbooks": svc.search_runbooks(payload.get("query") or "", payload.get("category"), payload.get("service"))

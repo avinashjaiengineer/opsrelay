@@ -260,6 +260,16 @@ ACTION_PLAN = {
 }
 
 
+def _precedent(similar: Any, action: str) -> str:
+    """What incident memory says about this action: the closest past incident that tried it."""
+    for m in similar if isinstance(similar, list) else []:
+        if m.get("action") == action:
+            return f" Precedent: {m['incident_id']} ({m['title']}) was {m['outcome']} with {action}."
+        if any(r.get("action") == action for r in m.get("rejected", [])):
+            return f" Note: {action} was rejected on {m['incident_id']}."
+    return ""
+
+
 def remediation_policy(s: Script) -> Call | str:
     iid = s.incident_id
     incident = s.result("get_incident")
@@ -286,6 +296,9 @@ def remediation_policy(s: Script) -> Call | str:
     if hits is None:
         query = f"{incident.get('title', '')}. {incident.get('root_cause', '')}"
         return Call("search_runbooks", {"query": query, "category": category, "service": service or ""})
+    similar = s.result("find_similar_incidents")
+    if similar is None:
+        return Call("find_similar_incidents", {"incident_id": iid})
     fitting = [h for h in hits if category in h["categories"]]
     preferred = PREFERRED_ACTION.get(category)
     runbook = next((h for h in fitting if preferred in h["recommended_actions"]), fitting[0] if fitting else None)
@@ -309,7 +322,8 @@ def remediation_policy(s: Script) -> Call | str:
             "service": service,
             "risk": risk,
             "rollback_plan": rollback_plan,
-            "rationale": f"Runbook {runbook['id']} ({runbook['title']}): {incident.get('recommended_action', '')}",
+            "rationale": f"Runbook {runbook['id']} ({runbook['title']}): {incident.get('recommended_action', '')}"
+            + _precedent(similar, action),
             "runbook_id": runbook["id"],
             **extra,
         },

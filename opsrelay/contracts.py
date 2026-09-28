@@ -125,7 +125,15 @@ CONTRACTS: dict[str, AgentContract] = {
         purpose="Find the root cause, with evidence and a confidence.",
         acts_in=frozenset({S.INVESTIGATING}),
         tools=frozenset(
-            {*READ_INCIDENT, *OBSERVE, "search_logs", "get_recent_deployments", "search_runbooks", "submit_diagnosis"}
+            {
+                *READ_INCIDENT,
+                *OBSERVE,
+                "search_logs",
+                "get_recent_deployments",
+                "search_runbooks",
+                "find_similar_incidents",
+                "submit_diagnosis",
+            }
         ),
         transitions=frozenset(),
         results=(DiagnosisResult,),
@@ -141,6 +149,7 @@ CONTRACTS: dict[str, AgentContract] = {
                 "get_service_info",
                 "get_metrics",
                 "search_runbooks",
+                "find_similar_incidents",
                 "list_allowed_actions",
                 "submit_proposal",
                 "decline_remediation",

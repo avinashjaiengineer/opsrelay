@@ -13,7 +13,7 @@ A job that keeps failing is dead-lettered and its incident handed to a person.
 Two ways to run jobs:
 
 - A worker thread in the coordinator process polls the store (local, EC2, Docker Compose). It also
-  runs `approvals.recover` periodically.
+  runs `approvals.recover` (and backfills incident memory) periodically.
 - With OPSRELAY_JOB_QUEUE_URL set (AWS), enqueuing also sends the job id to an SQS queue; a Lambda
   consumes it and calls the coordinator's `run_job` action, which runs that job synchronously. No
   long-running thread is needed; a scheduled Lambda calls `recover`, which also re-queues jobs
@@ -29,7 +29,7 @@ import time
 import uuid
 from collections.abc import Callable
 
-from . import approvals
+from . import approvals, memory
 from .config import get_settings
 from .deadletter import dead_letter
 from .store import Record, Store
@@ -160,6 +160,9 @@ class Worker:
         touched = approvals.recover(svc.store, svc.env)
         if touched:
             log.info("recovered interrupted remediations: %s", touched)
+        remembered = memory.backfill(svc.store)
+        if remembered:
+            log.info("wrote incident memories: %s", remembered)
 
     def run_once(self) -> bool:
         """Claim and run one job. False if there was nothing to do."""

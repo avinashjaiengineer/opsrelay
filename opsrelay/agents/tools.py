@@ -15,7 +15,7 @@ from typing import Any, Literal
 from pydantic import ValidationError
 from strands import tool
 
-from .. import approvals, runbooks
+from .. import approvals, memory, runbooks
 from ..contracts import CONTRACTS
 from ..environment import Environment
 from ..lifecycle import IllegalTransition, Status, status_of, transition
@@ -227,7 +227,7 @@ def triage_tools(store: Store, env: Environment, role: str = "triage") -> list:
     return [*common_tools(store), *observe.values(), submit_triage, report_inconclusive_triage]
 
 
-def knowledge_tools() -> dict[str, Any]:
+def knowledge_tools(store: Store) -> dict[str, Any]:
     @tool
     def search_runbooks(query: str, category: str = "", service: str = "") -> str:
         """Search the runbooks: the team's procedures for each kind of incident. Returns the best
@@ -242,7 +242,22 @@ def knowledge_tools() -> dict[str, Any]:
         hits = runbooks.search(query or category, k=3, category=category or None, service=service or None)
         return _json([rb.public(score) for rb, score in hits])
 
-    return {"search_runbooks": search_runbooks}
+    @tool
+    def find_similar_incidents(incident_id: str) -> str:
+        """Past incidents most like this one (incident memory): their root cause, the action taken and
+        its outcome, proposals people rejected and why, and the lessons from the postmortem. Use them
+        as hints, not proof: confirm with this incident's own evidence.
+
+        Args:
+            incident_id: The incident id.
+        """
+        incident = store.get_incident(incident_id)
+        if incident is None:
+            return _error(f"Unknown incident {incident_id}")
+        found = memory.similar(store, incident)
+        return _json(found or {"similar": [], "note": "No similar past incidents."})
+
+    return {"search_runbooks": search_runbooks, "find_similar_incidents": find_similar_incidents}
 
 
 def diagnostics_tools(store: Store, env: Environment, role: str = "diagnostics") -> list:
@@ -335,7 +350,7 @@ def diagnostics_tools(store: Store, env: Environment, role: str = "diagnostics")
         *observe.values(),
         search_logs,
         get_recent_deployments,
-        *knowledge_tools().values(),
+        *knowledge_tools(store).values(),
         submit_diagnosis,
     ]
 
@@ -440,7 +455,7 @@ def remediation_tools(store: Store, env: Environment, role: str = "remediation")
         *common_tools(store),
         observe["get_service_info"],
         observe["get_metrics"],
-        *knowledge_tools().values(),
+        *knowledge_tools(store).values(),
         list_allowed_actions,
         submit_proposal,
         decline_remediation,

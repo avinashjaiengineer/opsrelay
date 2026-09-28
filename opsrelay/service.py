@@ -2,7 +2,7 @@
 
 import logging
 
-from . import approvals, runbooks, telemetry
+from . import approvals, memory, postmortem, runbooks, telemetry
 from .agents import Invoker, build_coordinator
 from .audit import verify_incident
 from .config import SPECIALISTS, Role, get_settings
@@ -64,6 +64,7 @@ class IncidentService:
             self.store.record(incident_id, "coordinator", "error", f"{type(e).__name__}: {e}")
             raise
         self.store.record(incident_id, "coordinator", "report", report)
+        memory.remember_quietly(self.store, incident_id)  # if it closed; recover backfills misses
         return report
 
     def open_incident(
@@ -173,6 +174,30 @@ class IncidentService:
             "incident": incident,
             "approvals": self.store.list_approvals(incident_id=incident_id),
             "events": self.store.list_events(incident_id),
+            "similar": memory.similar(self.store, incident) if incident.get("service") else [],
+        }
+
+    def postmortem(self, incident_id: str) -> Record:
+        return postmortem.render(self.store, incident_id)
+
+    def similar_incidents(self, text: str = "", incident_id: str | None = None, k: int = 5) -> list[Record]:
+        if incident_id:
+            incident = self.store.get_incident(incident_id)
+            if incident is None:
+                raise KeyError(f"Unknown incident {incident_id}")
+            return memory.similar(self.store, incident, k)
+        if not text.strip():
+            raise ValueError("give a description of the symptoms, or an incident id")
+        return memory.search(self.store, text, k=k)
+
+    def recover(self) -> Record:
+        """Finish interrupted work: remediations, expired jobs, memories of closed incidents."""
+        from . import jobs
+
+        return {
+            "remediations": approvals.recover(self.store, self.env),
+            "requeued_jobs": jobs.requeue_expired(self.store),
+            "memories": memory.backfill(self.store),
         }
 
     def list_incidents(self, limit: int = 50) -> list[Record]:
