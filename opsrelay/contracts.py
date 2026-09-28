@@ -191,7 +191,8 @@ COORDINATOR_TRANSITIONS: frozenset[Transition] = frozenset(
         (S.OPEN, S.TRIAGING),
         (S.TRIAGING, S.ESCALATED),
         (S.INVESTIGATING, S.ESCALATED),
-        (S.AWAITING_APPROVAL, S.ESCALATED),
+        # Not AWAITING_APPROVAL -> ESCALATED: a proposal waiting for a person is already with a person;
+        # only their rejection (a platform move) escalates it.
         (S.FAILED, S.ESCALATED),
     }
 )

@@ -235,7 +235,7 @@ def test_every_state_change_has_its_audit_event(store, env):
 def test_escalation_cancels_pending_approvals(store, env):
     iid = _investigating(store)
     approval = _propose(store, env, iid)
-    transition(store, iid, Status.ESCALATED, actor="coordinator", reason="handing over")
+    transition(store, iid, Status.ESCALATED, actor="platform", reason="handing over")
 
     assert store.get_approval(approval["id"])["status"] == "cancelled"
     with pytest.raises(approvals.ApprovalError, match="already cancelled"):

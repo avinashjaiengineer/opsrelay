@@ -356,6 +356,21 @@ def diagnostics_tools(store: Store, env: Environment, role: str = "diagnostics")
     ]
 
 
+NO_ACTION = frozenset({"", "none", "no_action", "no-action", "noop", "no-op", "null", "n/a"})
+
+
+def _deployed_spelling(env: Environment, service: str, version: str) -> str:
+    """ "v2.13.4" -> "2.13.4" (or back) when that is how the service's deployments name it."""
+    try:
+        deployed = [d["version"] for d in env.deployments(service)]
+    except KeyError:
+        return version
+    if version in deployed:
+        return version
+    bare = version.strip().lstrip("vV")
+    return next((d for d in deployed if d.lstrip("vV") == bare), version)
+
+
 def remediation_tools(store: Store, env: Environment, role: str = "remediation") -> list:
     @tool
     def list_allowed_actions() -> str:
@@ -391,11 +406,13 @@ def remediation_tools(store: Store, env: Environment, role: str = "remediation")
             replicas: For scale_service only: the new replica count.
             target_version: For rollback_deployment only (optional): the version to roll back to.
         """
+        if action.strip().lower() in NO_ACTION:
+            return _error("That is not an action. If no action fits, call decline_remediation instead.")
         parameters: dict[str, int | str] = {}
         if replicas:
             parameters["replicas"] = replicas
         if target_version:
-            parameters["target_version"] = target_version
+            parameters["target_version"] = _deployed_spelling(env, service, target_version)
         try:
             proposal = RemediationProposal(
                 incident_id=incident_id,
@@ -657,6 +674,12 @@ def coordinator_tools(store: Store, role: str = "coordinator") -> list:
         """
         if not reason.strip():
             return _error("reason is required")
+        incident = store.get_incident(incident_id)
+        if incident and incident["status"] == Status.AWAITING_APPROVAL:
+            return _error(
+                "Don't escalate: the incident is waiting for a person to approve or reject the proposal, "
+                "which is the human step. Stop here and report that it awaits approval."
+            )
         try:
             transition(
                 store,

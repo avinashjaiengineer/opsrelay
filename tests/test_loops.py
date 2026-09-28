@@ -92,3 +92,27 @@ def test_remediation_is_not_dispatched_without_a_diagnosis(service):
 
     result = json.loads(asyncio.run(ask._tool_func(incident_id=incident["id"], request="restart it")))
     assert "needs the incident's diagnosis first" in result["error"]
+
+
+def test_coordinator_cannot_escalate_a_proposal_waiting_for_a_person(service):
+    from opsrelay.agents.tools import coordinator_tools
+
+    incident = service.simulate("bad-deploy")["incident"]
+    [escalate] = [t for t in coordinator_tools(service.store) if t.tool_name == "escalate_incident"]
+    result = escalate._tool_func(incident_id=incident["id"], reason="it needs approval")
+    assert "waiting for a person to approve" in result
+    assert service.store.get_incident(incident["id"])["status"] == "awaiting_approval"
+
+
+def test_proposal_details_models_get_wrong_are_normalized_or_redirected(service):
+    from opsrelay.agents.tools import remediation_tools
+
+    incident = service.simulate("bad-deploy", run=False)["incident"]
+    [propose] = [t for t in remediation_tools(service.store, service.env) if t.tool_name == "submit_proposal"]
+    assert "decline_remediation" in propose._tool_func(
+        incident_id=incident["id"], action="none", service="checkout-api", risk="low", rollback_plan="-", rationale="-"
+    )
+    from opsrelay.agents.tools import _deployed_spelling
+
+    assert _deployed_spelling(service.env, "checkout-api", "v2.13.4") == "2.13.4"
+    assert _deployed_spelling(service.env, "checkout-api", "9.9") == "9.9"
