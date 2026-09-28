@@ -18,6 +18,49 @@ from .cloudwatch import CloudWatchLogs, CloudWatchMetrics
 from .ecs import EcsDeployer
 
 
+class HybridEnvironment(Environment):
+    """Real services from the catalog, the rest simulated: OPSRELAY_ENVIRONMENT=hybrid.
+
+    Lets one deployment handle a real workload (CloudWatch, ECS) while the demo scenarios keep
+    working for the simulated services. Each call goes to whichever side owns the service."""
+
+    def __init__(self, simulated: Environment, real: "AwsEnvironment"):
+        self.sim = simulated
+        self.real = real
+
+    def _side(self, service: str) -> Environment:
+        return self.real if service in self.real.catalog.entries else self.sim
+
+    def seed(self, reset: bool = False) -> None:
+        self.sim.seed(reset)
+
+    def inject(self, scenario: str) -> Record:
+        return self.sim.inject(scenario)
+
+    def health_overview(self) -> list[Record]:
+        real = self.real.health_overview()
+        names = {s["service"] for s in real}  # a real service shadows a simulated one of the same name
+        return [*real, *(s for s in self.sim.health_overview() if s["service"] not in names)]
+
+    def service_info(self, service: str) -> Record:
+        return self._side(service).service_info(service)
+
+    def metrics(self, service: str) -> Record:
+        return self._side(service).metrics(service)
+
+    def logs(self, service: str, query: str = "") -> list[str]:
+        return self._side(service).logs(service, query)
+
+    def deployments(self, service: str) -> list[Record]:
+        return self._side(service).deployments(service)
+
+    def execute(self, action: str, service: str, params: Record, idempotency_key: str | None = None) -> Record:
+        return self._side(service).execute(action, service, params, idempotency_key)
+
+    def reconcile(self, action: str, service: str, params: Record, idempotency_key: str) -> str:
+        return self._side(service).reconcile(action, service, params, idempotency_key)
+
+
 class AwsEnvironment(Environment):
     def __init__(
         self,

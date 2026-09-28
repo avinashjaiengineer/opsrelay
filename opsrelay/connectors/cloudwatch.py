@@ -29,8 +29,9 @@ class CloudWatchMetrics:
         self.client = client
 
     def metrics(self, entry: ServiceEntry) -> dict[str, Any]:
+        window = entry.window_minutes or WINDOW_MINUTES
         now = datetime.now(UTC)
-        start = now - timedelta(minutes=WINDOW_MINUTES)
+        start = now - timedelta(minutes=window)
         end = now + timedelta(minutes=1)  # include the newest data points, which arrive late
         queries = []
         for key, spec in entry.metrics.items():
@@ -45,7 +46,7 @@ class CloudWatchMetrics:
                                 {"Name": k, "Value": str(v)} for k, v in (spec.get("dimensions") or {}).items()
                             ],
                         },
-                        "Period": WINDOW_MINUTES * 60,
+                        "Period": window * 60,
                         "Stat": spec.get("stat", "Average"),
                     },
                     "ReturnData": True,
@@ -70,7 +71,7 @@ class CloudWatchMetrics:
             p99 = v("p99_latency_seconds") * 1000
         requests_per_min = v("requests_per_min")
         if requests_per_min is None and v("requests") is not None:
-            requests_per_min = v("requests") / WINDOW_MINUTES
+            requests_per_min = v("requests") / window
 
         m = {
             "service": entry.name,
@@ -79,7 +80,7 @@ class CloudWatchMetrics:
             "cpu_pct": round(v("cpu_pct")) if v("cpu_pct") is not None else None,
             "memory_pct": round(v("memory_pct")) if v("memory_pct") is not None else None,
             "requests_per_min": round(requests_per_min) if requests_per_min is not None else None,
-            "window_minutes": WINDOW_MINUTES,
+            "window_minutes": window,
             "source": "cloudwatch",
         }
         checks = [

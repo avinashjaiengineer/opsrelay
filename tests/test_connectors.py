@@ -150,3 +150,55 @@ def test_the_example_catalog_loads():
     assert catalog.get("payments-db").cpu_pct_below == 80
     with pytest.raises(KeyError, match="Known services"):
         catalog.get("nope")
+
+
+def test_rollback_goes_to_the_task_definition_tagged_as_previous(aws):
+    env, clients = aws
+    ecs = clients["ecs"]
+    ecs.register_task_definition(  # :3, the bad release
+        family="checkout", containerDefinitions=[{"name": "app", "image": "shop/checkout:bad", "memory": 512}]
+    )
+    arn = ecs.describe_services(cluster="prod", services=["checkout-api"])["services"][0]["serviceArn"]
+    ecs.update_service(cluster="prod", service="checkout-api", taskDefinition="checkout:3")
+    # The deploy pipeline recorded what ran before (:2 here). Revision - 1 would be right too; make
+    # it differ, as after an earlier rollback when the newest revision isn't the one running.
+    ecs.tag_resource(resourceArn=arn, tags=[{"key": "opsrelay:previous", "value": "checkout:1"}])
+    assert [d["version"] for d in env.deployments("checkout-api")] == ["checkout:1", "checkout:3"]
+    result = env.execute("rollback_deployment", "checkout-api", {}, idempotency_key="k1")
+    assert result == {"ok": True, "detail": "Rolled checkout-api back to checkout:1"}
+    assert env.service_info("checkout-api")["version"] == "checkout:1"
+
+
+def test_settle_waits_for_the_rollout_then_for_fresh_metrics(aws):
+    env, clients = aws
+    waited, slept = [], []
+
+    class Waiter:
+        def wait(self, **kwargs):
+            waited.append(kwargs["services"])
+
+    deployer = env.deployer
+    deployer.client = type("C", (), {"__getattr__": lambda s, n: getattr(clients["ecs"], n)})()
+    deployer.client.get_waiter = lambda name: Waiter()
+    deployer.sleep = slept.append
+    catalog = dict(CATALOG["services"]["checkout-api"], settle_seconds=90)
+    env.catalog = ServiceCatalog.from_dict({"services": {"checkout-api": catalog}})
+    assert env.execute("restart_service", "checkout-api", {}, idempotency_key="k2")["ok"]
+    assert waited == [["checkout-api"]] and slept == [90]
+
+
+def test_hybrid_environment_routes_real_and_simulated_services(aws, store):
+    from opsrelay.connectors.aws import HybridEnvironment
+    from opsrelay.environment import SimulatedEnvironment
+
+    env, _clients = aws
+    sim = SimulatedEnvironment(store)
+    sim.seed()
+    hybrid = HybridEnvironment(sim, env)
+    names = [s["service"] for s in hybrid.health_overview()]
+    assert "checkout-api" in names and "auth-service" in names and names.count("checkout-api") == 1
+    assert hybrid.service_info("checkout-api")["version"] == "checkout:2"  # real: from ECS
+    assert hybrid.service_info("auth-service")["version"] == "3.8.0"  # simulated
+    alert = hybrid.inject("memory-leak")  # scenarios still work
+    assert alert["service"] == "auth-service" and not hybrid.metrics("auth-service")["healthy"]
+    assert hybrid.execute("restart_service", "auth-service", {})["ok"]

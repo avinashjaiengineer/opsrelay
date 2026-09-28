@@ -335,4 +335,8 @@ def get_environment(store: Store) -> Environment:
     # specialist runtimes need no write access to service records (see infra/stack.py).
     if settings.role == "coordinator":
         env.seed()
+    if settings.environment == "hybrid":
+        from .connectors.aws import AwsEnvironment, HybridEnvironment
+
+        return HybridEnvironment(env, AwsEnvironment.from_settings(settings.service_catalog, settings.aws_region))
     return env

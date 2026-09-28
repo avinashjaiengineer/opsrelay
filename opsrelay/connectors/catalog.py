@@ -16,6 +16,9 @@
           p99_latency_seconds: {namespace: AWS/ApplicationELB, name: TargetResponseTime, stat: p99, dimensions: {...}}
           cpu_pct:    {namespace: AWS/ECS, name: CPUUtilization, stat: Average, dimensions: {...}}
           memory_pct: {namespace: AWS/ECS, name: MemoryUtilization, stat: Average, dimensions: {...}}
+        window_minutes: 5             # how far back metrics look (shorter reacts faster)
+        settle_seconds: 0             # after an ECS change: wait for the rollout, then this long, so
+                                      # verification judges metrics from the new tasks
 
 See deploy/catalog.example.yaml.
 """
@@ -42,6 +45,8 @@ class ServiceEntry:
     p99_latency_ms_below: float = 500
     cpu_pct_below: float | None = None
     memory_pct_below: float | None = None
+    window_minutes: int = 5
+    settle_seconds: int = 0
 
 
 class ServiceCatalog:
@@ -72,6 +77,8 @@ class ServiceCatalog:
                 p99_latency_ms_below=float(healthy.get("p99_latency_ms_below", 500)),
                 cpu_pct_below=healthy.get("cpu_pct_below"),
                 memory_pct_below=healthy.get("memory_pct_below"),
+                window_minutes=int(spec.get("window_minutes", 5)),
+                settle_seconds=int(spec.get("settle_seconds", 0)),
             )
         if not entries:
             raise ValueError("the service catalog lists no services")

@@ -1,6 +1,7 @@
 """Deployments and remediation actions on Amazon ECS services.
 
-    rollback_deployment -> update the service to the previous task definition revision
+    rollback_deployment -> update the service to the task definition it ran before: the
+                           `opsrelay:previous` tag your deploy pipeline sets, else revision - 1
     restart_service     -> force a new deployment (replaces every task)
     scale_service       -> set the desired count
 
@@ -15,21 +16,24 @@ Before changing anything, the intended change is tagged on the ECS service (`ops
 Restarts are the exception: restarting twice is harmless, so an interrupted restart just runs again.
 """
 
+import time
 from typing import Any
 
 from .catalog import ServiceEntry
 
 TAG = "opsrelay:last-change"
 TARGET = "opsrelay:target"
+PREVIOUS = "opsrelay:previous"  # set by the deploy pipeline: the task definition before this release
 
 
 class EcsDeployer:
-    def __init__(self, client: Any = None, region: str | None = None):
+    def __init__(self, client: Any = None, region: str | None = None, sleep: Any = None):
         if client is None:
             import boto3
 
             client = boto3.client("ecs", region_name=region)
         self.client = client
+        self.sleep = sleep or time.sleep
 
     def _service(self, entry: ServiceEntry) -> dict:
         if not entry.ecs.get("cluster") or not entry.ecs.get("service"):
@@ -52,14 +56,42 @@ class EcsDeployer:
     def replicas(self, entry: ServiceEntry) -> int:
         return int(self._service(entry)["desiredCount"])
 
+    def _tags(self, svc: dict) -> dict[str, str]:
+        resp = self.client.list_tags_for_resource(resourceArn=svc["serviceArn"])
+        return {t["key"]: t["value"] for t in resp.get("tags", [])}
+
+    def _previous(self, svc: dict) -> str | None:
+        """The task definition (family:revision) that ran before the current one."""
+        try:
+            tagged = self._tags(svc).get(PREVIOUS)
+        except Exception:  # noqa: BLE001 - fall back to the revision number
+            tagged = None
+        family, rev = self._revision(svc["taskDefinition"])
+        if tagged and tagged != f"{family}:{rev}":
+            return tagged
+        return f"{family}:{rev - 1}" if rev > 1 else None
+
     def deployments(self, entry: ServiceEntry) -> list[dict]:
-        """Oldest first, the running one last: the previous revision, then the current one."""
-        family, rev = self._revision(self._service(entry)["taskDefinition"])
-        history = [{"version": f"{family}:{r}", "at": None, "by": "ecs"} for r in (rev - 1, rev) if r >= 1]
-        running = self._service(entry).get("deployments", [])
+        """Oldest first, the running one last: the previous task definition, then the current one."""
+        svc = self._service(entry)
+        family, rev = self._revision(svc["taskDefinition"])
+        versions = [v for v in (self._previous(svc), f"{family}:{rev}") if v]
+        history = [{"version": v, "at": None, "by": "ecs"} for v in versions]
+        running = svc.get("deployments", [])
         if running and history:
             history[-1]["at"] = str(running[0].get("createdAt") or "")
         return history
+
+    def _settle(self, entry: ServiceEntry) -> None:
+        """Wait for the rollout to finish, then long enough for metrics to come from the new tasks."""
+        if entry.settle_seconds <= 0:
+            return
+        self.client.get_waiter("services_stable").wait(
+            cluster=entry.ecs["cluster"],
+            services=[entry.ecs["service"]],
+            WaiterConfig={"Delay": 10, "MaxAttempts": 30},
+        )
+        self.sleep(entry.settle_seconds)
 
     def _record_intent(self, service: dict, key: str | None, target: str) -> None:
         if key:
@@ -72,10 +104,9 @@ class EcsDeployer:
         svc = self._service(entry)
         cluster, name = entry.ecs["cluster"], entry.ecs["service"]
         if action == "rollback_deployment":
-            family, rev = self._revision(svc["taskDefinition"])
-            if rev <= 1:
+            target = self._previous(svc)
+            if target is None:
                 return {"ok": False, "detail": f"{entry.name} has no previous task definition to roll back to"}
-            target = f"{family}:{rev - 1}"
             if params.get("target_version") not in (None, target):
                 return {"ok": False, "detail": f"{entry.name} can only roll back to {target}"}
             self._record_intent(svc, key, f"taskDefinition={target}")
@@ -94,15 +125,16 @@ class EcsDeployer:
             detail = f"Scaled {entry.name} to {replicas} tasks"
         else:
             return {"ok": False, "detail": f"{action} is not supported on ECS"}
+        try:
+            self._settle(entry)
+        except Exception as e:  # noqa: BLE001 - the change was made; verification will judge it
+            detail += f" (rollout not confirmed stable: {type(e).__name__})"
         return {"ok": True, "detail": detail}
 
     def reconcile(self, entry: ServiceEntry, key: str) -> str:
         try:
             svc = self._service(entry)
-            tags = {
-                t["key"]: t["value"]
-                for t in self.client.list_tags_for_resource(resourceArn=svc["serviceArn"]).get("tags", [])
-            }
+            tags = self._tags(svc)
         except Exception:  # noqa: BLE001 - if we can't look, we don't know
             return "unknown"
         if tags.get(TAG) != key[:256]:

@@ -27,7 +27,8 @@ class Settings(BaseSettings):
 
     # What the agents observe and act on: "simulated" (scenarios, no real systems) or "aws"
     # (CloudWatch metrics and logs, ECS deployments; see opsrelay/connectors).
-    environment: Literal["simulated", "aws"] = "simulated"
+    # "hybrid": the catalog's services are real (AWS), the rest simulated, so scenarios still work.
+    environment: Literal["simulated", "aws", "hybrid"] = "simulated"
     service_catalog: str = ""
 
     # "sqlite" for local development; "dynamodb" on AWS (all runtimes share one table).

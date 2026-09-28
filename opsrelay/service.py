@@ -7,7 +7,7 @@ from .agents import Invoker, build_coordinator
 from .audit import verify_incident
 from .config import SPECIALISTS, Role, get_settings
 from .contracts import CONTRACTS, COORDINATOR_TOOLS, COORDINATOR_TRANSITIONS, PLATFORM_TRANSITIONS
-from .environment import SCENARIOS, Environment, SimulatedEnvironment, get_environment
+from .environment import SCENARIOS, Environment, get_environment
 from .lifecycle import ALLOWED_TRANSITIONS, TERMINAL, Status
 from .policy import Facts, get_policy
 from .schemas import RemediationProposal
@@ -191,8 +191,8 @@ class IncidentService:
         """Inject a fault into the simulated environment and (by default) raise its alert as an incident."""
         if scenario not in SCENARIOS:
             raise ValueError(f"Unknown scenario '{scenario}'. Choose from: {', '.join(SCENARIOS)}")
-        if not isinstance(self.env, SimulatedEnvironment):
-            raise ValueError("Scenarios need the simulated environment")
+        if not hasattr(self.env, "inject"):
+            raise ValueError("Scenarios need the simulated (or hybrid) environment")
         alert = self.env.inject(scenario)
         if not open_incident:
             return {"alert": alert}
