@@ -212,3 +212,15 @@ def test_slack_route_checks_the_signature(service, configured, monkeypatch):
     assert ok.status_code == 200
     time.sleep(0.2)
     assert clicks and clicks[0]["user"]["id"] == "U_SRE"
+
+
+def test_secret_references_can_name_a_key(monkeypatch):
+    from opsrelay import secrets
+
+    stored = '{"opsrelay/slack-bot-token": "xoxb-1", "opsrelay/slack-signing-secret": " abc "}'
+    monkeypatch.setattr(secrets, "_fetch", lambda secret_id, region: stored if secret_id == "opsrelay/" else "plain")
+    assert secrets.resolve("secretsmanager:opsrelay/#opsrelay/slack-bot-token") == "xoxb-1"
+    assert secrets.resolve("secretsmanager:opsrelay/#opsrelay/slack-signing-secret") == "abc"
+    assert secrets.resolve("secretsmanager:other") == "plain"
+    with pytest.raises(KeyError, match="no key 'missing'"):
+        secrets.resolve("secretsmanager:opsrelay/#missing")

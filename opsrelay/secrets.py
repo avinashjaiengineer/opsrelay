@@ -5,10 +5,12 @@ itself or a Secrets Manager reference:
 
     arn:aws:secretsmanager:us-east-1:123456789012:secret:opsrelay/a2a-token-AbCdEf
     secretsmanager:opsrelay/a2a-token                  # a secret name in the configured region
+    secretsmanager:opsrelay/slack#bot-token            # one key of a key/value secret
 
 References are fetched once with the process's IAM role and cached. Nothing is logged.
 """
 
+import json
 from functools import lru_cache
 
 from .config import get_settings
@@ -27,12 +29,19 @@ def _fetch(secret_id: str, region: str) -> str:
 
 
 def resolve(value: str) -> str:
-    """The secret's value: `value` itself, or what the Secrets Manager reference points to."""
+    """The secret's value: `value` itself, or what the Secrets Manager reference points to. A
+    reference ending in `#key` reads that key of a key/value (JSON) secret."""
     if not value or not is_reference(value):
         return value
-    secret_id = value.removeprefix("secretsmanager:")
+    secret_id, _, key = value.removeprefix("secretsmanager:").partition("#")
     region = secret_id.split(":")[3] if secret_id.startswith("arn:") else get_settings().aws_region
-    return _fetch(secret_id, region)
+    text = _fetch(secret_id, region)
+    if not key:
+        return text
+    try:
+        return str(json.loads(text)[key]).strip()
+    except (ValueError, KeyError, TypeError) as e:
+        raise KeyError(f"secret {secret_id} has no key {key!r}") from e
 
 
 def clear_cache() -> None:
