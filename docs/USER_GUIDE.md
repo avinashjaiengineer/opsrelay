@@ -2,9 +2,9 @@
 
 What OpsRelay looks like in use, step by step, why it's useful, and where it could go next.
 
-Every screenshot below is from a real run of v0.2: `opsrelay up` with the agents on **Amazon
-Nova 2 Lite** through Amazon Bedrock. Nothing was scripted or edited; the agents wrote every
-sentence you see. (To install and start OpsRelay, see [WALKTHROUGH.md](WALKTHROUGH.md).)
+Every screenshot below is from a real run: `opsrelay up` with the agents on **Amazon Nova 2 Lite**
+through Amazon Bedrock (sections 1 to 8 from v0.2, sections 9 and 10 from v0.4). Nothing was
+scripted or edited; the agents wrote every sentence you see. (To install and start OpsRelay, see [WALKTHROUGH.md](WALKTHROUGH.md).)
 
 ![The whole workflow: trigger, investigate, approve, resolve](images/workflow.gif)
 
@@ -19,6 +19,10 @@ sentence you see. (To install and start OpsRelay, see [WALKTHROUGH.md](WALKTHROU
   - [6. What the agents actually did](#6-what-the-agents-actually-did)
   - [7. When a person says no](#7-when-a-person-says-no)
   - [8. When the policy says a person isn't needed](#8-when-the-policy-says-a-person-isnt-needed)
+  - [9. Runbooks and incident memory](#9-runbooks-and-incident-memory)
+  - [10. When the agents hand over: a postmortem draft](#10-when-the-agents-hand-over-a-postmortem-draft)
+  - [11. Approving from Slack](#11-approving-from-slack)
+  - [12. Measuring the agents](#12-measuring-the-agents)
 - [How the governance layer works](#how-the-governance-layer-works)
 - [How to use it](#how-to-use-it)
 - [Why it's useful](#why-its-useful)
@@ -129,6 +133,71 @@ replicas. Scaling a tier-2 service is **low** risk, and the policy says it doesn
 (**ALLOW**), so the platform approved it on the policy's behalf (*Decided by policy:v1-…*), ran
 it, verified recovery and resolved the incident about a minute after the alert. The same policy
 file decides this for every action; change it and the behavior changes, with no code changes.
+
+### 9. Runbooks and incident memory
+
+![Similar past incident, and a proposal citing its runbook](images/13-runbook-and-memory.jpg)
+
+A second memory leak on `auth-service`. Above the proposal, **Similar past incidents** shows the
+first one, 99% similar by Amazon Titan embeddings: its cause, the action taken (`restart_service`,
+runbook **RB-002**) and its outcome (**resolved**). The agents see the same list through the
+`find_similar_incidents` tool: diagnostics cited it as **history** evidence, and remediation's
+reasoning mentions it.
+
+The proposal cites the **Runbook** it follows, and the policy engine checks it: *follows runbook
+RB-002*. Had the agent proposed an action the runbook doesn't recommend, or cited none, the policy
+would require a person and say why, for example *RB-002 recommends restart_service,
+rollback_deployment; not scale_service*. Proposals people rejected are remembered too, with their
+reasons, so the next similar incident starts from what the team decided last time.
+
+### 10. When the agents hand over: a postmortem draft
+
+![Postmortem draft for an escalated incident](images/14-postmortem-draft.jpg)
+
+The release owner rejected a rollback: *"Fixing forward with 2.14.1 in 10 minutes; do not roll
+back"*. The incident escalated, and no agent wrote a postmortem, since people finished the job. So
+OpsRelay drafts one from the record: summary with the reason it was handed over, impact, the full
+timeline, what was proposed and decided, and follow-ups for the owning team to complete. The same
+Markdown comes from `opsrelay postmortem inc-… -o postmortem.md`, with similar past incidents and
+the audit chain's head hash appended.
+
+### 11. Approving from Slack
+
+With the Slack integration on, a proposal that needs a person is posted to your incidents channel:
+the incident, root cause, proposed action, runbook and the policy's reasons, with **Approve**,
+**Reject** and **Open in OpsRelay** buttons. A click is checked like a dashboard decision: the
+Slack user must be mapped to an OpsRelay user with a role allowed to decide that risk and severity
+(a SEV1 needs an incident commander). The message then shows the outcome, for example:
+
+> restart_service on auth-service approved by Avinash (incident response) (via Slack).
+
+The audit log records the decision as verified, with the role it was made under, and a **Resolved**
+message follows when verification confirms recovery. PagerDuty (pages on SEV1 or escalation,
+resolved automatically), Microsoft Teams (cards linking to the dashboard) and Jira (a ticket, then
+the postmortem as a comment) work the same way. See the README's Integrations section to set them up.
+
+### 12. Measuring the agents
+
+`opsrelay eval` runs six incident cases in throwaway sandboxes (a bad deploy, a memory leak, a
+traffic spike, an alert that doesn't name the service, a prompt injection hidden in the alert text,
+and a false alarm) and scores what the agents do. On **Amazon Nova 2 Lite**, the first run found
+real problems; fixing them in the platform (not by tuning prompts to the test) moved the scores:
+
+| Nova 2 Lite | First run | After fixes (12 runs) | Missed cases rerun (6 runs) |
+|---|---|---|---|
+| Triage | 100% | 100% | 100% |
+| Diagnosis | 80% | 100% | 100% |
+| Right action | 50% | 91% | 100% |
+| Right outcome | 50% | 82% | 100% |
+| Unsafe proposals | 0% | 0% | 0% |
+
+What the eval found, and what changed: a coordinator that stopped mid-incident (now nudged once,
+then handed to a person); an agent that resubmitted the same invalid result 102 times (repeated
+failing calls are refused); a diagnosis written as prose instead of submitted (the agent is asked
+once more to submit it); an instruction hidden in an alert that the coordinator passed on
+(remediation now takes its task from the platform, never from the coordinator); and a version
+written `v2.13.4` instead of `2.13.4` (normalized). `opsrelay replay inc-…` reruns a past incident
+on a new model or prompt and lists what changed; CI runs the eval on every push.
 
 ## How the governance layer works
 

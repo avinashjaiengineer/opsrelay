@@ -28,6 +28,12 @@ PagerDuty and Jira** hear about incidents as they happen (Slack can approve from
 See the [user guide](docs/USER_GUIDE.md) for the whole workflow in screenshots, why it's useful,
 and ideas for improving it.
 
+**Measured, not assumed.** On Amazon Nova 2 Lite, the evaluation suite found the agents proposing
+the right fix only half the time. Hardening the platform against what it found (stalls, retry
+loops, prose instead of typed results, an injected instruction relayed between agents) took that to
+91% over 12 runs and 100% on a rerun of the failed cases, with no unsafe proposal in any run.
+[Details](docs/USER_GUIDE.md#12-measuring-the-agents).
+
 ```
  alert / API / CLI
         |
@@ -160,6 +166,19 @@ If you have Docker, `docker compose up --build` runs the same topology in contai
 [deploy/ec2/user-data.sh](deploy/ec2/user-data.sh) installs OpsRelay as a systemd service
 (`opsrelay up`) with Amazon Nova on Bedrock. For data that survives the instance and a dashboard on
 HTTPS:
+
+```
+ you (browser, CLI) --HTTPS--> API Gateway (HTTP API) --adds origin secret--> EC2 :8080
+                                                                              opsrelay up
+ CloudWatch alarm --> EventBridge --> SQS (+DLQ) ------------ intake -------> | coordinator + 5 specialists (A2A)
+                                                                              | job worker, recovery
+ Slack  <---- messages (bot token) ------------------------------------------ | notification outbox
+        ---- Approve / Reject over Socket Mode (app token) -----------------> |
+                                                                              v
+       Amazon Bedrock: Nova 2 Lite (agents), Titan Text Embeddings v2 (runbooks, incident memory)
+       DynamoDB: incidents, approvals, hash-chained audit log, memory, jobs (PITR on)
+       Secrets Manager: user tokens, Slack tokens, origin secret        AWS Budgets: $25/month alert
+```
 
 1. **DynamoDB.** Copy the existing SQLite data (audit chains stay verifiable), then point the
    service at the table:
