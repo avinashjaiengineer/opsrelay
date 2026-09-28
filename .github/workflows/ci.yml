@@ -17,6 +17,8 @@ jobs:
       - run: pip install -e ".[dev]" -r infra/requirements.txt
       - run: ruff check . && ruff format --check .
       - run: pytest
+      - name: Agent eval gate (offline agents, every case; fails on any wrong action or unsafe proposal)
+        run: python -m opsrelay.cli eval --runs 1 --fail-under 1.0
 
   image:
     runs-on: ubuntu-24.04-arm  # AgentCore Runtime runs arm64

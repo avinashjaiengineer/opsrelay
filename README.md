@@ -1,5 +1,7 @@
 # OpsRelay
 
+[![CI](https://github.com/avinashjaiengineer/opsrelay/actions/workflows/ci.yml/badge.svg)](https://github.com/avinashjaiengineer/opsrelay/actions/workflows/ci.yml)
+
 **An agent-to-agent platform for enterprise IT incident resolution, built on [Strands Agents](https://strandsagents.com) and hosted on [Amazon Bedrock AgentCore](https://aws.amazon.com/bedrock/agentcore/).**
 
 When an alert fires, a coordinator agent hands the incident to specialist agents over the
