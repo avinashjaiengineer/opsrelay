@@ -1,12 +1,40 @@
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
 .venv/
+venv/
+env/
 .pytest_cache/
 .ruff_cache/
-*.egg-info/
-build/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Local state (SQLite store)
 *.db
 *.db-shm
 *.db-wal
+
+# Secrets and local config
 .env
+.env.*
+!.env.example
+
+# AWS CDK
 infra/cdk.out/
+infra/.venv/
+cdk.context.json
+
+# Editors and IDEs
+.vscode/
+.idea/
+*.swp
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
