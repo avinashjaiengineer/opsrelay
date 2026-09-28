@@ -1,0 +1,62 @@
+# The same topology as on AgentCore, on your machine: four specialist A2A servers and a
+# coordinator that reaches them over A2A. State goes to a local DynamoDB.
+#
+#   docker compose up --build
+#   curl -s localhost:8080/invocations -H 'content-type: application/json' \
+#        -d '{"action": "simulate", "scenario": "bad-deploy"}'
+#
+# Offline (scripted) agents by default. To use Claude on Bedrock, set
+# AGENTMESH_MODEL_PROVIDER=bedrock and AWS credentials in .env (see .env.example).
+
+x-agent: &agent
+  build: .
+  env_file:
+    - path: .env
+      required: false
+  environment: &env
+    AGENTMESH_STORE: dynamodb
+    AGENTMESH_DYNAMODB_TABLE: agentmesh
+    AGENTMESH_DYNAMODB_ENDPOINT: http://dynamodb:8000
+    AWS_REGION: ${AWS_REGION:-us-east-1}
+    AWS_DEFAULT_REGION: ${AWS_REGION:-us-east-1}
+  depends_on:
+    create-table:
+      condition: service_completed_successfully
+
+services:
+  dynamodb:
+    image: amazon/dynamodb-local:2.5.3
+    command: ["-jar", "DynamoDBLocal.jar", "-inMemory", "-sharedDb"]
+
+  create-table:
+    build: .
+    command: >
+      python -c "import time; from agentmesh.store.dynamodb import DynamoStore as D;
+      time.sleep(3); D.create_table('agentmesh', endpoint='http://dynamodb:8000')"
+    depends_on: [dynamodb]
+
+  triage:
+    <<: *agent
+    environment: {<<: *env, AGENTMESH_ROLE: triage, AGENTMESH_PUBLIC_URL: "http://triage:9000/"}
+  diagnostics:
+    <<: *agent
+    environment: {<<: *env, AGENTMESH_ROLE: diagnostics, AGENTMESH_PUBLIC_URL: "http://diagnostics:9000/"}
+  remediation:
+    <<: *agent
+    environment: {<<: *env, AGENTMESH_ROLE: remediation, AGENTMESH_PUBLIC_URL: "http://remediation:9000/"}
+  communications:
+    <<: *agent
+    environment: {<<: *env, AGENTMESH_ROLE: communications, AGENTMESH_PUBLIC_URL: "http://communications:9000/"}
+
+  coordinator:
+    <<: *agent
+    ports: ["8080:8080"]
+    environment:
+      <<: *env
+      AGENTMESH_ROLE: coordinator
+      AGENTMESH_SPECIALIST_TRANSPORT: a2a
+      AGENTMESH_TRIAGE_ENDPOINT: http://triage:9000
+      AGENTMESH_DIAGNOSTICS_ENDPOINT: http://diagnostics:9000
+      AGENTMESH_REMEDIATION_ENDPOINT: http://remediation:9000
+      AGENTMESH_COMMUNICATIONS_ENDPOINT: http://communications:9000
+    depends_on: [triage, diagnostics, remediation, communications]

@@ -1,0 +1,46 @@
+[project]
+name = "agentmesh"
+version = "0.1.0"
+description = "Agent-to-agent IT incident resolution on Strands Agents and Amazon Bedrock AgentCore"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+dependencies = [
+    "strands-agents[a2a]>=1.57,<2",
+    "a2a-sdk>=0.3.20,<0.4",
+    "bedrock-agentcore>=1.23,<2",
+    "boto3>=1.40",
+    "httpx>=0.28",
+    "pydantic-settings>=2.6",
+    "uvicorn>=0.30",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "ruff>=0.8", "moto[dynamodb]>=5"]
+
+[project.scripts]
+agentmesh = "agentmesh.cli:main"
+
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["agentmesh*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+extend-exclude = ["infra/cdk.out"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "S", "BLE", "ANN001"]
+ignore = ["S101"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S", "ANN001"]
+"infra/*" = ["ANN001"]
