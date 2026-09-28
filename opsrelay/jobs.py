@@ -41,7 +41,8 @@ KIND = "job"
 
 def enqueue(store: Store, incident_id: str, prompt: str, *, action: str = "coordinate", **extra) -> Record:  # noqa: ANN003
     """Queue a job: "coordinate" runs the coordinator with `prompt`; "notify" delivers the
-    notification `notification_id` (opsrelay.integrations)."""
+    notification `notification_id` (opsrelay.integrations); "decision" runs the approved action of
+    `approval_id`, then the coordinator."""
     job = new_record(
         KIND,
         f"job-{uuid.uuid4().hex[:12]}",
@@ -198,6 +199,8 @@ class Worker:
         try:
             if job["action"] == "notify":
                 integrations.deliver(svc.store, job["notification_id"])
+            elif job["action"] == "decision":
+                svc.finish_decision(job["approval_id"])
             else:
                 svc.run_coordinator(job["incident_id"], job["prompt"])
         except Exception as e:  # noqa: BLE001 - recorded on the job and in the audit log

@@ -171,6 +171,7 @@ class IncidentService:
         run: bool = True,
         role: str | None = None,
         verified: bool = False,
+        execute: bool = True,
     ) -> Record:
         approval = approvals.decide(
             self.store,
@@ -181,11 +182,22 @@ class IncidentService:
             note=note,
             role=role,
             verified=verified,
+            execute=execute,
         )
         report = None
         if run:
             report = self.run_coordinator(approval["incident_id"], decision_prompt(approval))
         return {"approval": approval, "incident": self.store.get_incident(approval["incident_id"]), "report": report}
+
+    def finish_decision(self, approval_id: str) -> str:
+        """After a decision recorded without executing (a "decision" job): run the approved action,
+        then let the coordinator continue."""
+        approval = self.store.get_approval(approval_id)
+        if approval is None:
+            raise KeyError(f"Unknown approval {approval_id}")
+        if approval["status"] == "approved":
+            approval = approvals.run_approved(self.store, self.env, approval)
+        return self.run_coordinator(approval["incident_id"], decision_prompt(approval))
 
     def simulate(self, scenario: str, *, open_incident: bool = True, run: bool = True) -> Record:
         """Inject a fault into the simulated environment and (by default) raise its alert as an incident."""

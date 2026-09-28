@@ -190,7 +190,7 @@ def test_slack_buttons_decide_with_the_mapped_user_and_their_role(service, http,
     assert "is not mapped to an OpsRelay user" in replies[0]
     assert "may not decide a high-risk action on a SEV1 incident" in replies[1]
     assert replies[2] == "rollback_deployment on checkout-api rejected by ic@corp (via Slack)."
-    assert [j["action"] for j in service.store.list_records("job") if j["status"] == "queued"].count("coordinate") == 1
+    assert [j["action"] for j in service.store.list_records("job") if j["status"] == "queued"].count("decision") == 1
 
 
 def test_slack_route_checks_the_signature(service, configured, monkeypatch):
@@ -244,3 +244,20 @@ def test_socket_mode_acks_and_applies_button_clicks():
     socket.handle(client, SimpleNamespace(type="events_api", envelope_id="e2", payload={"type": "event_callback"}))
     assert acks == ["e1", "e2"]  # every envelope is acknowledged
     assert clicked.wait(2) and seen[0]["actions"][0]["value"] == "apr-1" and len(seen) == 1
+
+
+def test_slack_approval_answers_at_once_and_a_job_runs_the_action(service, http, configured, monkeypatch):
+    from opsrelay.runtime import coordinator
+
+    monkeypatch.setattr(coordinator, "_service", service)
+    monkeypatch.setattr(coordinator, "start_worker", lambda: None)
+    incident = service.simulate("bad-deploy")["incident"]
+    [approval] = service.list_approvals()
+    coordinator._slack_click(_click(approval["id"], "U_IC"))
+    # Recorded, not yet run: a real rollback takes minutes, longer than Slack or API Gateway wait.
+    assert service.store.get_approval(approval["id"])["status"] == "approved"
+    assert service.store.get_incident(incident["id"])["status"] == "remediating"
+    assert "Running it now" in http.to("hooks.slack.com")[-1]["json"]["text"]
+    _drain(service)  # the "decision" job: execute, verify, resolve
+    assert service.store.get_approval(approval["id"])["status"] == "executed"
+    assert service.store.get_incident(incident["id"])["status"] == "resolved"

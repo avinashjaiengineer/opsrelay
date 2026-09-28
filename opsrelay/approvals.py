@@ -159,9 +159,12 @@ def decide(
     note: str | None = None,
     role: str | None = None,
     verified: bool = False,
+    execute: bool = True,
 ) -> Record:
     """Record a person's (or the policy's) decision and act on it. `role` and `verified` say who the
-    approver is according to the authentication layer (see opsrelay.auth)."""
+    approver is according to the authentication layer (see opsrelay.auth). With `execute=False` an
+    approval is only recorded; the caller runs it later with `run_approved` (a real action can take
+    minutes, longer than an API request or a Slack interaction may wait)."""
     if not approver or not approver.strip():
         raise ApprovalError("approver is required")
     current = store.get_approval(approval_id)
@@ -220,7 +223,7 @@ def decide(
             raise ApprovalError(f"Approval {approval_id} is already {now['status']}") from e
         raise ApprovalError(str(e)) from e
     approval = store.get_approval(approval_id)
-    return run_approved(store, env, approval) if approve else approval
+    return run_approved(store, env, approval) if approve and execute else approval
 
 
 def run_approved(store: Store, env: Environment, approval: Record) -> Record:

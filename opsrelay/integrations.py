@@ -379,8 +379,12 @@ def handle_slack_action(payload: Record, decide) -> str:  # noqa: ANN001
         return f"Not recorded: {e}"
     except (KeyError, ValueError) as e:
         return f"Not recorded: {str(e).strip(chr(39))}"
-    verb = "approved" if approve else "rejected"
-    return f"{approval['action']} on {approval['service']} {verb} by {principal.name} (via Slack)."
+    if approve:
+        return (
+            f"{approval['action']} on {approval['service']} approved by {principal.name} (via Slack). "
+            "Running it now; the outcome will be posted here."
+        )
+    return f"{approval['action']} on {approval['service']} rejected by {principal.name} (via Slack)."
 
 
 def respond_in_slack(response_url: str, text: str) -> None:

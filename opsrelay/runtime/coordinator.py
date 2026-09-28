@@ -55,7 +55,7 @@ from ..config import get_settings
 from ..intake.alerts import UnrecognizedAlert
 from ..intake.sqs import SqsIntake
 from ..lifecycle import IllegalTransition
-from ..service import IncidentService, decision_prompt, new_incident_prompt
+from ..service import IncidentService, new_incident_prompt
 
 log = logging.getLogger(__name__)
 app = BedrockAgentCoreApp()
@@ -133,11 +133,18 @@ def _decide_from_slack(approval_id: str, approve: bool, principal: auth.Principa
     role = rbac.authorize_decision(principal, approval["risk"], approval.get("severity") or incident.get("severity"))
     try:
         decided = svc.decide_approval(
-            approval_id, approve=approve, approver=principal.name, note="via Slack", role=role, verified=True, run=False
+            approval_id,
+            approve=approve,
+            approver=principal.name,
+            note="via Slack",
+            role=role,
+            verified=True,
+            run=False,
+            execute=False,
         )
     except ApprovalError as e:
         raise ValueError(str(e)) from e
-    _in_background(decided["approval"]["incident_id"], decision_prompt(decided["approval"]))
+    _finish_in_background(decided["approval"])
     return decided["approval"]
 
 
@@ -163,6 +170,13 @@ async def slack_actions(request: Request) -> JSONResponse:
 
 
 app.router.routes.insert(0, Route("/integrations/slack/actions", slack_actions, methods=["POST"]))
+
+
+def _finish_in_background(approval: dict[str, Any]) -> None:
+    """The decision is recorded; the action (which may take minutes on real systems) and the
+    coordinator's next steps run as a durable job, so the caller gets its answer at once."""
+    jobs.enqueue(service().store, approval["incident_id"], "", action="decision", approval_id=approval["id"])
+    start_worker()
 
 
 def _in_background(incident_id: str, prompt: str) -> None:
@@ -237,9 +251,8 @@ def handle(payload: dict[str, Any]) -> dict[str, Any]:
             "verified": principal.verified,
         }
         if background:
-            decided = svc.decide_approval(**kwargs, run=False)
-            approval = decided["approval"]
-            _in_background(approval["incident_id"], decision_prompt(approval))
+            decided = svc.decide_approval(**kwargs, run=False, execute=False)
+            _finish_in_background(decided["approval"])
             return {**decided, "status": "processing"}
         return svc.decide_approval(**kwargs)
 
