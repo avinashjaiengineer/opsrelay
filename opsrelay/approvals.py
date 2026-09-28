@@ -12,7 +12,7 @@ an action runs, `recover` finishes the job: the execution engine reconciles with
 instead of guessing.
 """
 
-from . import executor
+from . import executor, telemetry
 from .environment import Environment
 from .lifecycle import IllegalTransition, Status, transition
 from .policy import Facts, get_policy
@@ -58,6 +58,7 @@ def propose(
         raise ApprovalError(str(e).strip("'\"")) from e
 
     decision = get_policy(store).evaluate(proposal, facts)
+    telemetry.count("policy_decisions_total", decision=decision.decision)
     denied = decision.decision == "DENY"
     approval = {
         "id": new_approval_id(),

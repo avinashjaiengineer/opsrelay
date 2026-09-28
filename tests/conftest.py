@@ -1,5 +1,6 @@
 import pytest
 
+from opsrelay import telemetry
 from opsrelay.config import get_settings
 from opsrelay.environment import SimulatedEnvironment
 from opsrelay.jobs import stop_worker
@@ -12,6 +13,7 @@ from opsrelay.store.sqlite import SqliteStore
 
 def _clear_caches() -> None:
     stop_worker()
+    telemetry.reset()
     get_settings.cache_clear()
     get_store.cache_clear()
     get_policy.cache_clear()
@@ -21,7 +23,17 @@ def _clear_caches() -> None:
 @pytest.fixture(autouse=True)
 def _settings(monkeypatch, tmp_path):
     """Offline agents, in-process specialists, a fresh SQLite file per test, no retry delays."""
-    for key in ("MODEL_PROVIDER", "SPECIALIST_TRANSPORT", "STORE", "POLICY_FILE", "A2A_TOKEN"):
+    for key in (
+        "MODEL_PROVIDER",
+        "SPECIALIST_TRANSPORT",
+        "STORE",
+        "POLICY_FILE",
+        "A2A_TOKEN",
+        "JOB_QUEUE_URL",
+        "INTAKE_QUEUE_URL",
+        "WEBHOOK_TOKEN",
+        "AUTH_MODE",
+    ):
         monkeypatch.delenv(f"OPSRELAY_{key}", raising=False)
     monkeypatch.setenv("OPSRELAY_MODEL_PROVIDER", "offline")
     monkeypatch.setenv("OPSRELAY_SQLITE_PATH", str(tmp_path / "opsrelay.db"))

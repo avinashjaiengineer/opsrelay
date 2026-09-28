@@ -15,6 +15,7 @@
     opsrelay contracts                    # lifecycle states, agent contracts, who may make each move
     opsrelay whoami                       # who you are to the coordinator, and your roles
     opsrelay alert alarm.json             # ingest an alert: deduplicated, correlated, or a new incident
+    opsrelay metrics                      # MTTA, MTTR, time per stage, agent latency, policy decisions
     opsrelay policy propose new.yaml      # then: policy approve v2 (a second admin), policy activate v2
     opsrelay users add "Jane" --roles sre,incident_commander   # dev-mode users; prints a token once
     opsrelay up                           # run all six agents locally + a dashboard at http://127.0.0.1:8080
@@ -111,6 +112,34 @@ def _print_incident(data: dict[str, Any]) -> None:
         print("\n" + inc["postmortem"])
 
 
+def _fmt(seconds: float | None) -> str:
+    if seconds is None:
+        return "-"
+    return f"{seconds:.0f}s" if seconds < 120 else f"{seconds / 60:.1f}m"
+
+
+def _rate(r: float | None) -> str:
+    return "-" if r is None else f"{r:.0%}"
+
+
+def _print_metrics(m: dict[str, Any]) -> None:
+    inc = m["incidents"]
+    print(
+        f"Incidents: {m['window']['incidents']}  open {inc['open']}  resolved {_rate(inc['resolved_rate'])}  "
+        f"escalated {_rate(inc['escalated_rate'])}  by status {inc['by_status']}"
+    )
+    print("\nStage                   count  median   p90")
+    for name, s in m["stages"].items():
+        print(f"  {name:<21} {s['count']:>5}  {_fmt(s['median']):>6}  {_fmt(s['p90']):>6}")
+    print("\nAgent            calls  p90 latency  retries  unavailable  contract violations")
+    for agent, a in m["agents"].items():
+        print(
+            f"  {agent:<15} {a['calls']:>5}  {_fmt(a['latency_seconds']['p90']):>11}  {a['retries']:>7}  "
+            f"{a['unavailable']:>11}  {a['contract_violations']:>19}"
+        )
+    print(f"\nPolicy decisions: {m['policy_decisions']}   Alerts: {m['alerts']}")
+
+
 def _print_approvals(approvals: list[dict[str, Any]]) -> None:
     if not approvals:
         print("No approvals.")
@@ -186,6 +215,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--confidence", type=float, default=0.95, help="diagnosis confidence (default 0.95)")
     sub.add_parser("contracts", help="lifecycle states, agent contracts and who may make each move")
     sub.add_parser("whoami", help="who the coordinator thinks you are, and your roles")
+    sub.add_parser("metrics", help="MTTA, MTTR, time per stage, agent latency and failures, policy decisions")
     p = sub.add_parser("alert", help="send an alert (CloudWatch alarm event, SNS notification or Alertmanager JSON)")
     p.add_argument("file", help="a JSON file, or - for stdin")
     p = sub.add_parser("users", help="manage dev-mode users (OPSRELAY_AUTH_MODE=dev)")
@@ -257,6 +287,8 @@ def main(argv: list[str] | None = None) -> int:
         }
     elif args.cmd == "whoami":
         payload = {"action": "whoami"}
+    elif args.cmd == "metrics":
+        payload = {"action": "get_metrics"}
     elif args.cmd == "alert":
         text = sys.stdin.read() if args.file == "-" else Path(args.file).read_text(encoding="utf-8")
         payload = {"action": "ingest_alert", "message": json.loads(text)}
@@ -310,6 +342,8 @@ def main(argv: list[str] | None = None) -> int:
     result = call(payload)
     if args.json or args.cmd in ("contracts",) or (args.cmd == "policy" and args.policy_cmd == "list"):
         print(json.dumps(result, indent=2, default=str))
+    elif args.cmd == "metrics":
+        _print_metrics(result["metrics"])
     elif args.cmd == "alert":
         for r in result["results"]:
             print(

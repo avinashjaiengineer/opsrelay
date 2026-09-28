@@ -2,12 +2,14 @@
 
 import json
 import logging
+import time
 from collections.abc import Awaitable, Callable
 
 from strands import Agent, tool
 from strands.hooks import AfterToolCallEvent, BeforeToolCallEvent, HookProvider, HookRegistry
 from strands.models.model import Model
 
+from .. import telemetry
 from ..config import SPECIALISTS, Role, get_settings
 from ..contracts import CONTRACTS, COORDINATOR_TOOLS
 from ..deadletter import dead_letter
@@ -176,9 +178,12 @@ def _delegation_tool(role: Role, invoke: Invoker, store: Store):
                 {"agent": role, "attempt": attempt.number},
             )
 
+        started = time.monotonic()
         try:
-            reply = await call_with_retry(role, lambda: invoke(message), done=done, on_retry=on_retry)
+            with telemetry.span("opsrelay.delegate", incident_id=incident_id, agent=role):
+                reply = await call_with_retry(role, lambda: invoke(message), done=done, on_retry=on_retry)
         except Exception as e:  # noqa: BLE001 - an unavailable agent is a result the platform handles
+            telemetry.count("agent_calls_total", agent=role, outcome="unavailable")
             log.warning("delegation to %s failed: %s", role, e)
             letter = dead_letter(store, incident_id, role, request, attempts or [f"{type(e).__name__}: {e}"], str(e))
             after = store.get_incident(incident_id) or before
@@ -190,10 +195,12 @@ def _delegation_tool(role: Role, invoke: Invoker, store: Store):
                 }
             )
 
+        telemetry.observe("agent_latency_seconds", time.monotonic() - started, agent=role)
         after = store.get_incident(incident_id) or before
         events = new_events()
         store.record(incident_id, role, "a2a.response", reply[:2000], {**agent_meta(role)})
         problem = contract.postcondition(before, after, events)
+        telemetry.count("agent_calls_total", agent=role, outcome="contract_violation" if problem else "ok")
         if problem:
             store.record(
                 incident_id, "platform", "contract.violation", f"{role}: {problem}", {"agent": role, "phase": "result"}

@@ -2,7 +2,7 @@
 
 import logging
 
-from . import approvals
+from . import approvals, telemetry
 from .agents import Invoker, build_coordinator
 from .audit import verify_incident
 from .config import SPECIALISTS, Role, get_settings
@@ -57,7 +57,8 @@ class IncidentService:
     def run_coordinator(self, incident_id: str, prompt: str) -> str:
         agent = build_coordinator(self.store, self.env, self.invokers)
         try:
-            report = str(agent(prompt)).strip()
+            with telemetry.span("opsrelay.coordinate", incident_id=incident_id):
+                report = str(agent(prompt)).strip()
         except Exception as e:
             log.exception("coordinator failed on %s", incident_id)
             self.store.record(incident_id, "coordinator", "error", f"{type(e).__name__}: {e}")
@@ -95,6 +96,7 @@ class IncidentService:
             "service": service,
             "severity": None,
             "status": str(Status.OPEN),
+            "status_since": created,
             "fingerprints": [external_ref] if external_ref else [],
             "alerts_count": 1,
             "alert": alert,
@@ -102,6 +104,7 @@ class IncidentService:
             "updated_at": created,
         }
         self.store.put_incident(incident)
+        telemetry.count("incidents_total", source=source)
         self.store.record(
             incident["id"],
             f"source:{source}",

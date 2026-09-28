@@ -23,6 +23,7 @@ import socket
 import time
 import uuid
 
+from . import telemetry
 from .config import get_settings
 from .environment import Environment
 from .store import Record, Store, now_iso
@@ -78,6 +79,7 @@ def execute(store: Store, env: Environment, approval: Record) -> Record:
             f"{approval['action']} on {approval['service']} already ran ({key}); not running it again",
             {"idempotency_key": key, "approval_id": approval["id"]},
         )
+        telemetry.count("executions_total", outcome="replayed")
         return {**existing["result"], "key": key, "replayed": True}
     if existing.get("lease_until", 0) > time.time():
         return {"ok": None, "in_progress": True, "key": key, "detail": f"running under {existing.get('owner')}"}
@@ -123,10 +125,13 @@ def _run(store: Store, env: Environment, approval: Record, claim: Record) -> Rec
         {"idempotency_key": key, "approval_id": approval["id"], "params": params, "attempt": claim["attempt"]},
         input=params,
     )
+    started = time.monotonic()
     try:
-        result = env.execute(approval["action"], approval["service"], params, idempotency_key=key)
+        with telemetry.span("opsrelay.execute", incident_id=approval["incident_id"], action=approval["action"]):
+            result = env.execute(approval["action"], approval["service"], params, idempotency_key=key)
     except Exception as e:  # noqa: BLE001 - any connector failure is a failed execution, not a crash
         result = {"ok": False, "detail": f"{type(e).__name__}: {e}"}
+    telemetry.observe("execution_latency_seconds", time.monotonic() - started, action=approval["action"])
     return _finish(store, approval, claim, result)
 
 
@@ -138,6 +143,7 @@ def _finish(store: Store, approval: Record, claim: Record, result: Record, recon
         claim["rev"],
         {"status": "done", "result": result, "finished_at": now_iso(), "reconciled": reconciled},
     )
+    telemetry.count("executions_total", outcome="reconciled" if reconciled else "ok" if result["ok"] else "failed")
     store.record(
         approval["incident_id"],
         "platform",

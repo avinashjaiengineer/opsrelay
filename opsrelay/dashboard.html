@@ -111,6 +111,10 @@
   button.link { border: 0; background: none; color: var(--accent); padding: 8px 0 0; }
   button.link:hover { text-decoration: underline; }
   .audit { font-weight: 600; padding: 8px 12px; border-radius: 8px; margin-bottom: 8px; }
+  .tiles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  .tile { border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; }
+  .tile .v { font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .tile .l { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; }
   .audit.ok { color: var(--ok); background: var(--ok-bg); } .audit.bad { color: var(--bad); background: var(--bad-bg); }
 </style>
 </head>
@@ -149,6 +153,10 @@
     <section>
       <h2>Service health</h2>
       <table id="health"><tr><td class="empty">Loading…</td></tr></table>
+    </section>
+    <section>
+      <h2>Operations</h2>
+      <div id="ops" class="empty">Loading…</div>
     </section>
     <section>
       <h2>Incidents</h2>
@@ -435,7 +443,35 @@ async function refresh() {
   } finally { busy = false; }
 }
 
-loadIdentity().then(refresh);
+const dur = (s) => (s == null ? "–" : s < 120 ? `${Math.round(s)}s` : s < 7200 ? `${(s / 60).toFixed(1)}m` : `${(s / 3600).toFixed(1)}h`);
+const tile = (label, value, hint) => `<div class="tile" title="${esc(hint || "")}"><div class="v">${value}</div><div class="l">${esc(label)}</div></div>`;
+
+async function refreshOps() {
+  try {
+    const m = (await call({action: "get_metrics"})).metrics;
+    const st = m.stages, inc = m.incidents;
+    const pctOrDash = (r) => (r == null ? "–" : `${Math.round(r * 100)}%`);
+    const agents = Object.entries(m.agents).map(([name, a]) => `
+      <tr><td>${esc(name)}</td><td class="num">${a.calls} calls</td>
+          <td class="num">p90 ${dur(a.latency_seconds.p90)}</td>
+          <td class="num">${a.retries + a.unavailable + a.contract_violations ? `<span class="chip warn">${a.retries + a.unavailable + a.contract_violations} issues</span>` : '<span class="chip ok">ok</span>'}</td></tr>`).join("");
+    $("ops").classList.remove("empty");
+    $("ops").innerHTML = `
+      <div class="tiles">
+        ${tile("MTTR", dur(st.time_to_resolve.median), "median time from incident opened to resolved")}
+        ${tile("MTTA", dur(st.time_to_acknowledge.median), "median time from approval requested to a person deciding")}
+        ${tile("Diagnose", dur(st.time_to_diagnose.median), "median time from incident opened to diagnosis")}
+        ${tile("Open", inc.open, "incidents not yet resolved or escalated")}
+        ${tile("Resolved", pctOrDash(inc.resolved_rate), "of closed incidents")}
+        ${tile("Escalated", pctOrDash(inc.escalated_rate), "of closed incidents")}
+      </div>
+      ${agents ? `<table style="margin-top:8px">${agents}</table>` : ""}
+      <div class="kind" style="margin-top:6px">Last ${m.window.incidents} incidents · policy ${Object.entries(m.policy_decisions).map(([k, v]) => `${esc(k.replaceAll("_", " ").toLowerCase())} ${v}`).join(", ") || "–"}${m.alerts.deduplicated + m.alerts.correlated ? ` · alerts deduplicated ${m.alerts.deduplicated}, correlated ${m.alerts.correlated}` : ""}</div>`;
+  } catch (e) { /* not signed in, or no permission: leave the panel as is */ }
+}
+
+loadIdentity().then(refresh).then(refreshOps);
+setInterval(refreshOps, 10000);
 setInterval(refresh, 1500);
 </script>
 </body>

@@ -15,7 +15,7 @@ id chosen up front. Two copies of an alert arriving together can't both open inc
 
 from datetime import UTC, datetime, timedelta
 
-from .. import jobs
+from .. import jobs, telemetry
 from ..config import get_settings
 from ..lifecycle import TERMINAL
 from ..store import Record, new_incident_id, now_iso
@@ -66,6 +66,13 @@ def _correlate(svc, alert: Alert) -> Record | None:  # noqa: ANN001
 
 def ingest(svc, alert: Alert, *, queue: bool = True) -> Record:  # noqa: ANN001
     """Route one alert. Returns {"outcome", "incident_id", ...}."""
+    with telemetry.span("opsrelay.ingest", source=alert.source, fingerprint=alert.fingerprint):
+        result = _route(svc, alert, queue)
+    telemetry.count("alerts_total", source=alert.source, outcome=result["outcome"])
+    return result
+
+
+def _route(svc, alert: Alert, queue: bool) -> Record:  # noqa: ANN001
     store = svc.store
     for _ in range(5):
         key = store.get_record(KEY, alert.fingerprint)

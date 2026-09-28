@@ -111,9 +111,12 @@ def transition(
                         incident_id, "platform", "approval.cancelled", f"{approval['action']} cancelled: escalated"
                     )
                 )
+    now = now_iso()
     done = store.commit(
         Commit(
-            incident=IncidentChange(incident_id, str(current), {**fields, "status": str(to), "updated_at": now_iso()}),
+            incident=IncidentChange(
+                incident_id, str(current), {**fields, "status": str(to), "status_since": now, "updated_at": now}
+            ),
             new_approvals=list(new_approvals),
             approval_moves=moves,
             events=all_events,
@@ -123,4 +126,19 @@ def transition(
         raise IllegalTransition(
             f"{incident_id} or its approvals changed while moving from {current} to {to}; try again"
         )
+    _measure(incident, current, to, now)
     return done.incident
+
+
+def _measure(incident: Record, current: Status, to: Status, now: str) -> None:
+    from datetime import datetime
+
+    from . import telemetry
+
+    since = incident.get("status_since") or incident["created_at"]
+    seconds = (datetime.fromisoformat(now) - datetime.fromisoformat(since)).total_seconds()
+    telemetry.observe("stage_duration_seconds", seconds, stage=str(current))
+    if to in TERMINAL:
+        telemetry.count("incidents_closed_total", outcome=str(to))
+    if current is Status.VERIFYING and to is Status.FAILED:
+        telemetry.count("verification_failures_total")

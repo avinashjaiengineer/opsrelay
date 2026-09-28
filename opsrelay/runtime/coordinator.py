@@ -18,6 +18,7 @@ Payloads are JSON objects with an "action":
     {"action": "ingest_alert", "message": {...}}              # CloudWatch alarm event / SNS / Alertmanager
     {"action": "run_job", "job_id": "job-..."}                # run one queued job now (the SQS worker path)
     {"action": "recover"}                                     # finish interrupted work (scheduled on AWS)
+    {"action": "get_metrics"}                                 # MTTA, MTTR, stage times, agent and policy stats
     {"action": "list_policies"} / {"action": "propose_policy", "text": "<yaml>"}
     {"action": "review_policy", "version": "v2", "approve": true} / {"action": "activate_policy", "version": "v2"}
 
@@ -42,7 +43,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from .. import approvals, auth, jobs, policy_admin, rbac, secrets
+from .. import approvals, auth, jobs, ops_metrics, policy_admin, rbac, secrets
 from ..approvals import ApprovalError
 from ..config import get_settings
 from ..intake.alerts import UnrecognizedAlert
@@ -229,6 +230,8 @@ def handle(payload: dict[str, Any]) -> dict[str, Any]:
         return jobs.Worker(service).run_job(payload["job_id"])
     if action == "recover":
         return {"remediations": approvals.recover(svc.store, svc.env), "requeued_jobs": jobs.requeue_expired(svc.store)}
+    if action == "get_metrics":
+        return {"metrics": ops_metrics.compute(svc.store, int(payload.get("limit", 200)))}
     if action == "get_contracts":
         return svc.contracts()
     if action == "list_policies":
