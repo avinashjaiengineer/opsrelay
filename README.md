@@ -230,6 +230,10 @@ Environment variables, prefixed `OPSRELAY_` (see `opsrelay/config.py`):
 | `OIDC_ISSUER`, `OIDC_AUDIENCE` | | Your identity provider, e.g. a Cognito user pool and its app client id |
 | `A2A_TOKEN` | | Shared token for specialist A2A servers outside AgentCore (may be a Secrets Manager ARN) |
 | `EXECUTION_LEASE_SECONDS`, `JOB_LEASE_SECONDS` | `300`, `900` | How long a stopped executor or worker holds its lease before another takes over |
+| `INTAKE_QUEUE_URL` | | SQS queue to read alerts from (EventBridge, SNS) |
+| `WEBHOOK_TOKEN` | | Enables `POST /alerts` and is the bearer token it requires |
+| `CORRELATION_WINDOW_MINUTES` | `30` | New alerts on a service with an open incident this recent join it |
+| `JOB_QUEUE_URL` | | SQS queue for jobs (AWS): a Lambda runs them via `run_job`; no worker thread |
 
 ## Governance and safety
 
@@ -283,6 +287,41 @@ opsrelay policy activate v1
 opsrelay policy history; opsrelay audit policy
 ```
 
+## Alerts in: event-driven intake
+
+Incidents open from real alerts, not only from the API and the demo scenarios:
+
+```
+CloudWatch alarm --> EventBridge rule --> SQS (+ DLQ) --> OpsRelay intake --> dedup / correlate --> incident
+Alertmanager -----> webhook POST /alerts, or SNS --> SQS ------^
+```
+
+- **Parsers** for EventBridge "CloudWatch Alarm State Change" events, classic alarm notifications
+  via SNS, and Alertmanager v4 webhooks (`opsrelay/intake/alerts.py`).
+- **Deduplication:** a repeat of an open incident's alert (same alarm ARN or Alertmanager
+  fingerprint) is counted on that incident. **Correlation:** a new alert on a service with an open
+  incident, within `OPSRELAY_CORRELATION_WINDOW_MINUTES`, is attached to it. **Resolved** alerts are
+  noted; verification still decides. Race-free: the fingerprint is claimed before the incident is
+  created.
+- **Where alerts come in:** `OPSRELAY_INTAKE_QUEUE_URL` (an SQS consumer, for EC2 or `opsrelay up`),
+  `POST /alerts` with `Authorization: Bearer $OPSRELAY_WEBHOOK_TOKEN` (point Alertmanager's
+  webhook receiver at it), the `ingest_alert` API action, or `opsrelay alert alarm.json`.
+- **On AgentCore,** the CDK stack wires it for you: EventBridge rule and SNS topic into an SQS
+  queue with a dead-letter queue, consumed by an intake Lambda. Coordination jobs go through a
+  second SQS queue and a worker Lambda (`OPSRELAY_JOB_QUEUE_URL`), and a scheduled Lambda finishes
+  interrupted work every 5 minutes, so nothing depends on a long-running process.
+
+## Observability
+
+- `opsrelay metrics`, the `get_metrics` action and the console's **Operations** panel: time to
+  detect, diagnose, acknowledge (MTTA), remediate, verify and resolve (MTTR) as median and p90;
+  incident outcomes; per-agent calls, latency and failures; policy decisions; alert deduplication.
+  Computed from the audit trail, so no metrics backend is needed.
+- OpenTelemetry metrics (`opsrelay_incidents_total`, `opsrelay_stage_duration_seconds`,
+  `opsrelay_agent_latency_seconds`, `opsrelay_policy_decisions_total`, ...) and trace spans for
+  coordination, delegation, execution and intake. Set `OTEL_EXPORTER_OTLP_ENDPOINT` and
+  `pip install "opsrelay[otel]"` to export them to any OpenTelemetry collector.
+
 ## Connecting real systems
 
 `OPSRELAY_ENVIRONMENT=aws` replaces the simulation with real services: a YAML service catalog
@@ -318,13 +357,15 @@ opsrelay/
   policy_admin.py versioned, reviewed, audited policy changes
   a2a_auth.py    bearer-token auth for specialist A2A servers; secrets.py: Secrets Manager
   connectors/    AWS environment: service catalog, CloudWatch, CloudWatch Logs, ECS
+  intake/        alert parsers (CloudWatch, Alertmanager), dedup/correlation router, SQS consumer
+  telemetry.py   OpenTelemetry metrics and traces; ops_metrics.py: MTTA, MTTR, stage times
   audit.py       audit hash-chain verification
   environment.py connector interface + simulated IT environment and scenarios
   offline.py     scripted Strands model provider for offline runs
   remote.py      A2A client with SigV4 for AgentCore runtimes
   service.py     incident operations used by the runtime and CLI
   cli.py         `opsrelay` command
-infra/           AWS CDK app (AgentCore runtimes, DynamoDB, IAM)
+infra/           AWS CDK app (AgentCore runtimes, DynamoDB, IAM, EventBridge, SQS, Lambdas)
 tests/           lifecycle, contracts, policy, approvals, jobs, auth, connectors, workflow, A2A, runtime, stores, agents, infra
 docs/            USER_GUIDE.md: the workflow in screenshots; WALKTHROUGH.md: hands-on tour;
                  ARCHITECTURE.md: design decisions and next steps
@@ -335,7 +376,7 @@ deploy/          EC2 user data; an example service catalog
 
 ```bash
 pip install -e ".[dev]" aws-cdk-lib constructs
-pytest            # 128 tests, fully offline
+pytest            # 150 tests, fully offline
 ruff check . && ruff format --check .
 ```
 

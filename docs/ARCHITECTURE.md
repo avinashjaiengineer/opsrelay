@@ -147,21 +147,38 @@ coordinator; the job model maps onto it directly.)
 - **IAM**: Bedrock scoped to the configured model; DynamoDB writes scoped per runtime with
   `dynamodb:LeadingKeys`, mirroring the agent contracts; secrets from Secrets Manager.
 
+## Event-driven intake
+
+Alerts from CloudWatch (EventBridge or SNS) and Alertmanager are normalized into one `Alert` with a
+fingerprint, then routed (`intake/router.py`): duplicates of an open incident's alert are counted
+on it, alerts on a service with a recent open incident are correlated with it, others open a new
+incident whose coordination is queued as a job. The fingerprint is claimed (an `alert_key` record,
+insert-if-absent or compare-and-set) with the incident id chosen *before* the incident is created,
+so concurrent copies can't open two incidents. On AWS the stack puts SQS queues with dead-letter
+queues at the boundary and Lambdas behind them: intake calls `ingest_alert`, a worker calls
+`run_job`, and a schedule calls `recover`. Queue retries and DLQs sit on top of the platform's own
+leases, so a message can be delivered twice without work being done twice.
+
+## Observability
+
+`telemetry.py` emits OpenTelemetry metrics and spans at the platform's decision points (lifecycle
+moves, delegations, policy decisions, executions, intake), exported over OTLP when configured.
+`ops_metrics.py` computes the operator's numbers (MTTA, MTTR, time per stage, agent health) from
+the audit trail, so they're available, and auditable, without a metrics backend.
+
 ## What to build next
 
-Done since the first review: atomic state + audit, execution leases and reconciliation, durable
-jobs, A2A authentication, CloudWatch/ECS connectors, authentication, roles, audited policy changes,
-least-privilege IAM and Secrets Manager. Still open:
+Done: atomic state + audit, execution leases and reconciliation, durable jobs (SQS-driven on AWS),
+A2A authentication, CloudWatch/ECS connectors, authentication and roles, audited policy changes,
+least-privilege IAM, Secrets Manager, event-driven intake with deduplication and correlation,
+OpenTelemetry metrics and traces, MTTA/MTTR. Still open:
 
-- **Event-driven intake:** EventBridge and SQS (CloudWatch alarms, Alertmanager and PagerDuty
-  webhooks) with deduplication, instead of scenarios and direct API calls; SQS in front of the
-  coordinator for jobs.
-- **More connectors:** EKS/Kubernetes, your deploy tool, a CMDB, ticketing.
-- **Observability:** OpenTelemetry traces per incident, and metrics (agent latency and failures,
-  policy denials, time to diagnose, approve and resolve).
+- **More sources and connectors:** PagerDuty, Datadog and Kubernetes events; EKS, your deploy tool,
+  a CMDB, ticketing.
+- **Richer correlation:** across dependent services (the CMDB graph), not only the same service.
 - **Intelligence:** runbook retrieval, incident memory, an evaluation suite per agent, incident
   replay against new model versions.
 - **Console:** server-sent events instead of polling; a React/TypeScript console; Slack or Teams
   approvals.
-- **Operations:** multi-tenant isolation, disaster recovery, an AgentCore JWT authorizer in front
-  of the coordinator so the platform, not only the application, checks tokens.
+- **Operations:** multi-tenant isolation, disaster recovery, dashboards and alarms on the exported
+  metrics.
