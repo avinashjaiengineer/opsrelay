@@ -10,6 +10,7 @@ REPO_URL="${REPO_URL:-https://github.com/avinashjaiengineer/opsrelay.git}"
 MODEL_ID="${MODEL_ID:-global.amazon.nova-2-lite-v1:0}"
 AUTH_MODE="${AUTH_MODE:-none}"
 DEV_USERS="${DEV_USERS:-}"
+EXTRAS="${EXTRAS:-}"  # optional extras, e.g. "slack" for Slack Socket Mode
 REGION="$(TOKEN=$(curl -sX PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds: 60') \
   && curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/placement/region)"
 
@@ -19,7 +20,7 @@ id opsrelay &>/dev/null || useradd --system --create-home --home-dir /opt/opsrel
 [ -d /opt/opsrelay/app ] || git clone "$REPO_URL" /opt/opsrelay/app
 python3.11 -m venv /opt/opsrelay/venv
 /opt/opsrelay/venv/bin/pip install --upgrade pip
-/opt/opsrelay/venv/bin/pip install /opt/opsrelay/app
+/opt/opsrelay/venv/bin/pip install "/opt/opsrelay/app${EXTRAS:+[$EXTRAS]}"
 chown -R opsrelay:opsrelay /opt/opsrelay
 
 cat > /etc/systemd/system/opsrelay.service <<EOF

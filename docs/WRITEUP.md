@@ -80,7 +80,7 @@ Simulations hide timing. On real ECS a rollback takes about two minutes, which e
 Strands Agents with the A2A protocol between agents · Amazon Bedrock (Nova 2 Lite; Titan Text
 Embeddings v2 for runbook and incident-memory retrieval) · EC2 behind API Gateway · DynamoDB with
 point-in-time recovery · EventBridge and SQS for alerts · Secrets Manager · Slack (Socket Mode) · ECS
-Fargate and CloudWatch for the demo workload · 205 tests and an agent-eval gate in GitHub Actions.
+Fargate and CloudWatch for the demo workload · 200+ tests and an agent-eval gate in GitHub Actions.
 
 Code: https://github.com/avinashjaiengineer/opsrelay
 

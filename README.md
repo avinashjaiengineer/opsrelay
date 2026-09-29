@@ -187,6 +187,18 @@ HTTPS:
        Secrets Manager: user tokens, Slack tokens, origin secret        AWS Budgets: $25/month alert
 ```
 
+[deploy/ec2/stack.py](deploy/ec2/stack.py) builds all of this in one command and removes it again:
+
+```bash
+python deploy/ec2/stack.py up --env deploy.env --slack-users slack-users.yaml --budget-email you@example.com
+python deploy/ec2/stack.py deploy --env deploy.env --slack-users slack-users.yaml   # new commit or settings
+python deploy/ec2/stack.py status
+python deploy/ec2/stack.py down                     # keeps the table and secrets; --delete-data drops the table
+```
+
+`deploy.env` holds this deployment's `OPSRELAY_*` settings (Slack, sign-in, PagerDuty, Jira), with
+secret values as `secretsmanager:` references. The steps below are what it does, for doing it by hand:
+
 1. **DynamoDB.** Copy the existing SQLite data (audit chains stay verifiable), then point the
    service at the table:
    ```bash

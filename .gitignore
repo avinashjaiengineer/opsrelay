@@ -39,3 +39,6 @@ cdk.context.json
 Thumbs.db
 desktop.ini
 SESSION_NOTES.md
+
+# Deployment inputs for deploy/ec2/stack.py (names deployment details)
+.deploy/
