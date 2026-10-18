@@ -33,8 +33,8 @@ services:
   create-table:
     build: .
     command: >
-      python -c "import time; from opsrelay.store.dynamodb import DynamoStore as D;
-      time.sleep(3); D.create_table('opsrelay', endpoint='http://dynamodb:8000')"
+      python -c "from opsrelay.store.dynamodb import DynamoStore as D;
+      D.ensure_table('opsrelay', endpoint='http://dynamodb:8000')"
     depends_on: [dynamodb]
 
   triage:

@@ -39,6 +39,7 @@ opsrelay = ["dashboard.html", "policies.yaml", "eval_cases.yaml", "runbooks/*.md
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+pythonpath = ["."]
 
 [tool.ruff]
 line-length = 120

@@ -55,6 +55,81 @@ def test_incidents_round_trip_newest_first(any_store):
     assert any_store.get_incident("inc-missing") is None
 
 
+def test_incident_listing_supports_cursor_pagination(any_store):
+    incidents = [_incident(created_at=f"2026-01-0{i}T00:00:00+00:00") for i in range(1, 4)]
+    for incident in incidents:
+        any_store.put_incident(incident)
+    first = any_store.list_incidents_page(2)
+    assert len(first.items) == 2 and first.next_cursor
+    second = any_store.list_incidents_page(2, first.next_cursor)
+    assert [item["id"] for item in first.items + second.items] == [
+        incidents[2]["id"],
+        incidents[1]["id"],
+        incidents[0]["id"],
+    ]
+    assert second.next_cursor is None
+
+
+def test_incident_updates_use_revision_compare_and_set(any_store):
+    inc = _incident()
+    any_store.put_incident(inc)
+    first = any_store.get_incident(inc["id"])
+    assert first["rev"] == 0
+
+    updated = any_store.update_incident(inc["id"], owner="first")
+    assert updated["rev"] == 1
+
+    stale = IncidentChange(inc["id"], "open", {"owner": "stale"}, expected_rev=0)
+    assert any_store.commit(Commit(incident=stale)) is None
+    assert any_store.get_incident(inc["id"])["owner"] == "first"
+
+
+def test_audit_event_data_redacts_sensitive_fields():
+    event = make_event(
+        "inc-redact",
+        "platform",
+        "tool.invoked",
+        "test",
+        {"params": {"api_key": "secret", "replicas": 4}, "nested": [{"password": "secret"}]},
+    )
+    assert event["data"] == {
+        "params": {"api_key": "[REDACTED]", "replicas": 4},
+        "nested": [{"password": "[REDACTED]"}],
+    }
+
+
+def test_dynamodb_status_index_backfill_handles_legacy_items(any_store):
+    if not isinstance(any_store, DynamoStore):
+        return
+    inc = _incident()
+    any_store.put_incident(inc)
+    approval = _approval(inc["id"])
+    any_store.put_approval(approval)
+    any_store.table.update_item(
+        Key={"pk": f"APR#{approval['id']}", "sk": "META"},
+        UpdateExpression="REMOVE gsi2pk, gsi2sk",
+    )
+    assert any_store.list_approvals(status="pending") == []
+    assert any_store.backfill_status_index() == 1
+    assert any_store.list_approvals(status="pending")[0]["id"] == approval["id"]
+
+
+def test_dynamodb_incident_approval_index_backfill_handles_legacy_items(any_store):
+    if not isinstance(any_store, DynamoStore):
+        return
+    inc = _incident()
+    any_store.put_incident(inc)
+    approval = _approval(inc["id"])
+    any_store.put_approval(approval)
+    any_store.table.update_item(
+        Key={"pk": f"APR#{approval['id']}", "sk": "META"},
+        UpdateExpression="REMOVE gsi3pk, gsi3sk",
+    )
+    assert any_store.list_approvals(incident_id=inc["id"]) == []
+    assert any_store.backfill_status_index() == 1
+    assert any_store.list_approvals(incident_id=inc["id"])[0]["id"] == approval["id"]
+
+
 def test_status_changes_only_by_compare_and_set(any_store):
     inc = _incident()
     any_store.put_incident(inc)

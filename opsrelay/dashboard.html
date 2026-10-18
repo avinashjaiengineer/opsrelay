@@ -181,6 +181,9 @@ let selected = new URLSearchParams(location.search).get("incident");  // links f
 let showTools = false;
 let showAllEvents = false;
 let busy = false;
+let currentDetail = null;
+let currentAudit = null;
+const eventCache = {};
 // Replace a panel's HTML only when it changed: no flicker, and text selection and hover survive.
 const setHTML = (el, html) => { if (el._html !== html) { el.innerHTML = html; el._html = html; } };
 let me = null;  // the signed-in principal, from whoami
@@ -273,7 +276,7 @@ async function decide(approvalId, approve) {
   } catch (e) { showError(e.message); }
 }
 window.decide = decide;
-window.select = (id) => { selected = id; showAllEvents = false; refresh(); };
+window.select = (id) => { selected = id; showAllEvents = false; delete eventCache[id]; refresh(); };
 window.toggleTools = (on) => { showTools = on; refresh(); };
 window.toggleAll = () => { showAllEvents = !showAllEvents; refresh(); };
 
@@ -367,7 +370,9 @@ function remediationCard(i, approvals) {
       ${decided}${actions}
     </div>
     ${earlier.length ? `<h3>Earlier proposals</h3><ul class="earlier">${earlier.map((e) => `<li>${chip(e.status)} ${esc(e.action)} on ${esc(e.service)} · risk ${esc(e.risk)}${e.policy ? ` · ${esc((e.policy.reasons || [])[0] || "")}` : ""}</li>`).join("")}</ul>` : ""}`;
-  return card("Proposed remediation", body);
+  const loadMore = currentDetail && currentDetail.approvals_next_cursor
+    ? `<button class="link" onclick="loadMoreApprovals()">Load more approvals</button>` : "";
+  return card("Proposed remediation", body + loadMore);
 }
 
 function timelineCard(events) {
@@ -382,9 +387,11 @@ function timelineCard(events) {
   };
   const more = shown.length > TIMELINE_PREVIEW
     ? `<button class="link" onclick="toggleAll()">${showAllEvents ? "Show only the latest events" : `Show all ${shown.length} events`}</button>` : "";
+  const loadMore = currentDetail && currentDetail.events_next_cursor
+    ? `<button class="link" onclick="loadMoreEvents()">Load more events</button>` : "";
   return `<section class="card"><h2>Agent timeline <span class="kind">${showAllEvents || shown.length <= TIMELINE_PREVIEW ? "" : `latest ${TIMELINE_PREVIEW} of ${shown.length}`}</span>
       <label class="toggle"><input type="checkbox" ${showTools ? "checked" : ""} onchange="toggleTools(this.checked)">show tool calls</label></h2>
-    <ol class="timeline">${visible.map(row).join("")}</ol>${more}</section>`;
+    <ol class="timeline">${visible.map(row).join("")}</ol>${more}${loadMore}</section>`;
 }
 
 function auditCard(i, audit, events) {
@@ -418,6 +425,8 @@ function postmortemCard(i) {
 }
 
 function renderDetail(data, audit) {
+  currentDetail = data;
+  currentAudit = audit;
   const i = data.incident;
   const warnings = data.events.filter((e) => ["contract.violation", "agent.unavailable", "coordinator.stalled"].includes(e.kind));
   const auditChip = audit
@@ -441,6 +450,40 @@ function renderDetail(data, audit) {
     ${postmortemCard(i)}`);
 }
 
+window.loadMoreEvents = async () => {
+  if (!currentDetail || !currentDetail.events_next_cursor) return;
+  try {
+    const page = await call({
+      action: "list_events", incident_id: currentDetail.incident.id,
+      limit: 100, cursor: currentDetail.events_next_cursor,
+    });
+    currentDetail = {
+      ...currentDetail,
+      events: [...currentDetail.events, ...page.events],
+      events_next_cursor: page.next_cursor,
+    };
+    eventCache[currentDetail.incident.id] = currentDetail;
+    renderDetail(currentDetail, currentAudit);
+  } catch (e) { showError(e.message); }
+};
+
+window.loadMoreApprovals = async () => {
+  if (!currentDetail || !currentDetail.approvals_next_cursor) return;
+  try {
+    const page = await call({
+      action: "get_incident", incident_id: currentDetail.incident.id,
+      approvals_limit: 100, approvals_cursor: currentDetail.approvals_next_cursor,
+    });
+    currentDetail = {
+      ...currentDetail,
+      approvals: [...currentDetail.approvals, ...page.approvals],
+      approvals_next_cursor: page.approvals_next_cursor,
+    };
+    eventCache[currentDetail.incident.id] = currentDetail;
+    renderDetail(currentDetail, currentAudit);
+  } catch (e) { showError(e.message); }
+};
+
 async function refresh() {
   if (busy) return;
   busy = true;
@@ -450,9 +493,25 @@ async function refresh() {
     renderIncidents(list.incidents);
     if (selected) {
       const [detail, audit] = await Promise.all([
-        call({action: "get_incident", incident_id: selected}),
+        call({
+          action: "get_incident", incident_id: selected,
+          events_limit: 100, events_cursor: null,
+          approvals_limit: 100, approvals_cursor: null,
+        }),
         call({action: "verify_audit", incident_id: selected}).catch(() => null),
       ]);
+      const cached = eventCache[selected];
+      if (cached && cached.events.length > detail.events.length) {
+        detail.events = cached.events;
+        detail.events_next_cursor = cached.events_next_cursor;
+      }
+      if (cached && cached.approvals.length > detail.approvals.length) {
+        detail.approvals = cached.approvals;
+        detail.approvals_next_cursor = cached.approvals_next_cursor;
+      }
+      if (!cached) {
+        eventCache[selected] = detail;
+      }
       const inc = detail.incident;
       if (inc.status === "escalated" && !inc.postmortem && !(inc.id in drafts)) {
         drafts[inc.id] = (await call({action: "get_postmortem", incident_id: inc.id}).catch(() => ({}))).markdown || "";

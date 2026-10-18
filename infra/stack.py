@@ -91,7 +91,17 @@ class OpsRelayStack(Stack):
                     index_name="gsi1",
                     partition_key=dynamodb.Attribute(name="gsi1pk", type=dynamodb.AttributeType.STRING),
                     sort_key=dynamodb.Attribute(name="gsi1sk", type=dynamodb.AttributeType.STRING),
-                )
+                ),
+                dynamodb.GlobalSecondaryIndexPropsV2(
+                    index_name="gsi2",
+                    partition_key=dynamodb.Attribute(name="gsi2pk", type=dynamodb.AttributeType.STRING),
+                    sort_key=dynamodb.Attribute(name="gsi2sk", type=dynamodb.AttributeType.STRING),
+                ),
+                dynamodb.GlobalSecondaryIndexPropsV2(
+                    index_name="gsi3",
+                    partition_key=dynamodb.Attribute(name="gsi3pk", type=dynamodb.AttributeType.STRING),
+                    sort_key=dynamodb.Attribute(name="gsi3sk", type=dynamodb.AttributeType.STRING),
+                ),
             ],
             billing=dynamodb.Billing.on_demand(),
             point_in_time_recovery_specification=dynamodb.PointInTimeRecoverySpecification(

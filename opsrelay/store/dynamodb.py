@@ -18,15 +18,19 @@ is retried.
 """
 
 import json
+import time
 from typing import Any
 
 import boto3
 from boto3.dynamodb.conditions import Key
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, EndpointConnectionError
 
-from .base import GENESIS_HASH, Commit, Committed, Record, Store, now_iso, seal
+from .base import GENESIS_HASH, Commit, Committed, Page, Record, Store, decode_cursor, encode_cursor, now_iso, seal
 
 GSI = "gsi1"
+STATUS_GSI = "gsi2"
+INCIDENT_APPROVAL_GSI = "gsi3"
+REQUIRED_INDEXES = frozenset((GSI, STATUS_GSI, INCIDENT_APPROVAL_GSI))
 MAX_ATTEMPTS = 20
 
 
@@ -53,6 +57,19 @@ class DynamoStore(Store):
         # The resource's client serializes plain Python values itself (no {"S": ...} wrappers).
         self._client = self.table.meta.client
 
+    def schema_health(self) -> Record:
+        """Report whether the deployed table has every index used by the store."""
+        description = self._client.describe_table(TableName=self.table.name)["Table"]
+        indexes = {index["IndexName"] for index in description.get("GlobalSecondaryIndexes", [])}
+        missing = sorted(REQUIRED_INDEXES - indexes)
+        return {
+            "ok": not missing,
+            "backend": type(self).__name__,
+            "table": self.table.name,
+            "indexes": sorted(indexes),
+            "missing_indexes": missing,
+        }
+
     @staticmethod
     def create_table(
         table_name: str, region: str | None = None, resource: Any = None, endpoint: str | None = None
@@ -63,7 +80,10 @@ class DynamoStore(Store):
             TableName=table_name,
             BillingMode="PAY_PER_REQUEST",
             KeySchema=[{"AttributeName": "pk", "KeyType": "HASH"}, {"AttributeName": "sk", "KeyType": "RANGE"}],
-            AttributeDefinitions=[{"AttributeName": n, "AttributeType": "S"} for n in ("pk", "sk", "gsi1pk", "gsi1sk")],
+            AttributeDefinitions=[
+                {"AttributeName": n, "AttributeType": "S"}
+                for n in ("pk", "sk", "gsi1pk", "gsi1sk", "gsi2pk", "gsi2sk", "gsi3pk", "gsi3sk")
+            ],
             GlobalSecondaryIndexes=[
                 {
                     "IndexName": GSI,
@@ -72,9 +92,89 @@ class DynamoStore(Store):
                         {"AttributeName": "gsi1sk", "KeyType": "RANGE"},
                     ],
                     "Projection": {"ProjectionType": "ALL"},
-                }
+                },
+                {
+                    "IndexName": STATUS_GSI,
+                    "KeySchema": [
+                        {"AttributeName": "gsi2pk", "KeyType": "HASH"},
+                        {"AttributeName": "gsi2sk", "KeyType": "RANGE"},
+                    ],
+                    "Projection": {"ProjectionType": "ALL"},
+                },
+                {
+                    "IndexName": INCIDENT_APPROVAL_GSI,
+                    "KeySchema": [
+                        {"AttributeName": "gsi3pk", "KeyType": "HASH"},
+                        {"AttributeName": "gsi3sk", "KeyType": "RANGE"},
+                    ],
+                    "Projection": {"ProjectionType": "ALL"},
+                },
             ],
         ).wait_until_exists()
+
+    @staticmethod
+    def ensure_table(
+        table_name: str,
+        region: str | None = None,
+        resource: Any = None,
+        endpoint: str | None = None,
+        attempts: int = 30,
+        delay_seconds: float = 1.0,
+    ) -> None:
+        """Create a table when needed, retrying while a local endpoint becomes ready."""
+        for attempt in range(attempts):
+            try:
+                DynamoStore.create_table(table_name, region, resource, endpoint)
+                return
+            except ClientError as e:
+                if e.response.get("Error", {}).get("Code") == "ResourceInUseException":
+                    return
+                if attempt == attempts - 1:
+                    raise
+            except EndpointConnectionError:
+                if attempt == attempts - 1:
+                    raise
+            time.sleep(delay_seconds)
+
+    def backfill_status_index(self) -> int:
+        """Populate gsi2 keys on legacy approval and record items; return items updated."""
+        updated = 0
+        kwargs: dict[str, Any] = {
+            "ProjectionExpression": "#pk, #sk, #doc",
+            "ExpressionAttributeNames": {"#pk": "pk", "#sk": "sk", "#doc": "doc"},
+        }
+        while True:
+            response = self.table.scan(**kwargs)
+            for item in response.get("Items", []):
+                pk = item.get("pk", "")
+                if not (pk.startswith("APR#") or pk.startswith("REC#")):
+                    continue
+                doc = json.loads(item["doc"])
+                status = doc.get("status")
+                created_at = doc.get("created_at")
+                if not status or not created_at:
+                    continue
+                kind = doc.get("kind") if pk.startswith("REC#") else "APPROVAL"
+                index_pk = f"REC#{kind}#{status}" if kind != "APPROVAL" else f"APPROVAL#{status}"
+                updates = []
+                values: dict[str, str] = {}
+                if "gsi2pk" not in item or "gsi2sk" not in item:
+                    updates.extend(["gsi2pk = :status_pk", "gsi2sk = :status_sk"])
+                    values.update({":status_pk": index_pk, ":status_sk": created_at})
+                if kind == "APPROVAL" and ("gsi3pk" not in item or "gsi3sk" not in item):
+                    updates.extend(["gsi3pk = :incident_pk", "gsi3sk = :incident_sk"])
+                    values.update({":incident_pk": f"APPROVAL#{doc['incident_id']}", ":incident_sk": created_at})
+                if not updates:
+                    continue
+                self.table.update_item(
+                    Key={"pk": pk, "sk": item["sk"]},
+                    UpdateExpression="SET " + ", ".join(updates),
+                    ExpressionAttributeValues=values,
+                )
+                updated += 1
+            if "LastEvaluatedKey" not in response:
+                return updated
+            kwargs["ExclusiveStartKey"] = response["LastEvaluatedKey"]
 
     # Low-level helpers
     def _put(self, pk: str, sk: str, doc: Record, **attrs: str) -> None:
@@ -105,6 +205,7 @@ class DynamoStore(Store):
             "sk": "META",
             "doc": json.dumps(incident),
             "status": incident["status"],
+            "rev": int(incident.get("rev", 0)),
             "gsi1pk": "INCIDENT",
             "gsi1sk": incident["created_at"],
         }
@@ -118,6 +219,10 @@ class DynamoStore(Store):
             "status": approval["status"],
             "gsi1pk": "APPROVAL",
             "gsi1sk": approval["created_at"],
+            "gsi2pk": f"APPROVAL#{approval['status']}",
+            "gsi2sk": approval["created_at"],
+            "gsi3pk": f"APPROVAL#{approval['incident_id']}",
+            "gsi3sk": approval["created_at"],
         }
 
     @staticmethod
@@ -130,6 +235,8 @@ class DynamoStore(Store):
             "rev": record.get("rev", 0),
             "gsi1pk": f"REC#{record['kind']}",
             "gsi1sk": record["created_at"],
+            "gsi2pk": f"REC#{record['kind']}#{record.get('status') or '-'}",
+            "gsi2sk": record["created_at"],
         }
 
     # Atomic writes
@@ -144,14 +251,18 @@ class DynamoStore(Store):
                 if current is None or current["status"] != c.expected_status:
                     return None
                 incident = {**current, **c.updates}
+                incident["rev"] = int(current.get("rev", 0)) + 1
                 items.append(
                     {
                         "Put": {
                             "TableName": table,
                             "Item": self._incident_item(incident),
-                            "ConditionExpression": "#s = :from",
-                            "ExpressionAttributeNames": {"#s": "status"},
-                            "ExpressionAttributeValues": {":from": c.expected_status},
+                            "ConditionExpression": "#s = :from AND (attribute_not_exists(#r) OR #r = :rev)",
+                            "ExpressionAttributeNames": {"#s": "status", "#r": "rev"},
+                            "ExpressionAttributeValues": {
+                                ":from": c.expected_status,
+                                ":rev": int(c.expected_rev if c.expected_rev is not None else current.get("rev", 0)),
+                            },
                         }
                     }
                 )
@@ -274,6 +385,7 @@ class DynamoStore(Store):
 
     # Incidents
     def put_incident(self, incident: Record) -> None:
+        incident = {**incident, "rev": int(incident.get("rev", 0))}
         self.table.put_item(Item=self._incident_item(incident), ConditionExpression="attribute_not_exists(pk)")
 
     def get_incident(self, incident_id: str) -> Record | None:
@@ -282,9 +394,42 @@ class DynamoStore(Store):
     def list_incidents(self, limit: int = 50) -> list[Record]:
         return self._query(Key("gsi1pk").eq("INCIDENT"), index=GSI, forward=False, limit=limit)
 
+    def list_incidents_page(self, limit: int = 50, cursor: str | None = None) -> Page:
+        kwargs: dict[str, Any] = {
+            "IndexName": GSI,
+            "KeyConditionExpression": Key("gsi1pk").eq("INCIDENT"),
+            "ScanIndexForward": False,
+            "Limit": limit,
+        }
+        if cursor:
+            start_key = decode_cursor(cursor)
+            if not isinstance(start_key, dict):
+                raise ValueError("invalid cursor")
+            kwargs["ExclusiveStartKey"] = start_key
+        response = self.table.query(**kwargs)
+        items = [json.loads(item["doc"]) for item in response.get("Items", [])]
+        next_cursor = encode_cursor(response["LastEvaluatedKey"]) if response.get("LastEvaluatedKey") else None
+        return Page(items, next_cursor)
+
     # Audit log
     def list_events(self, incident_id: str) -> list[Record]:
         return self._query(Key("pk").eq(f"INC#{incident_id}") & Key("sk").begins_with("EVT#"))
+
+    def list_events_page(self, incident_id: str, limit: int = 100, cursor: str | None = None) -> Page:
+        kwargs: dict[str, Any] = {
+            "KeyConditionExpression": Key("pk").eq(f"INC#{incident_id}") & Key("sk").begins_with("EVT#"),
+            "ScanIndexForward": True,
+            "Limit": limit,
+        }
+        if cursor:
+            start_key = decode_cursor(cursor)
+            if not isinstance(start_key, dict):
+                raise ValueError("invalid cursor")
+            kwargs["ExclusiveStartKey"] = start_key
+        response = self.table.query(**kwargs)
+        items = [json.loads(item["doc"]) for item in response.get("Items", [])]
+        next_cursor = encode_cursor(response["LastEvaluatedKey"]) if response.get("LastEvaluatedKey") else None
+        return Page(items, next_cursor)
 
     def event_count(self, incident_id: str) -> int:
         item = self.table.get_item(Key={"pk": f"INC#{incident_id}", "sk": "CHAIN"}, ConsistentRead=True).get("Item")
@@ -295,20 +440,73 @@ class DynamoStore(Store):
         return self._get(f"APR#{approval_id}")
 
     def list_approvals(self, status: str | None = None, incident_id: str | None = None) -> list[Record]:
-        approvals = self._query(Key("gsi1pk").eq("APPROVAL"), index=GSI)
+        if incident_id:
+            approvals = self._query(Key("gsi3pk").eq(f"APPROVAL#{incident_id}"), index=INCIDENT_APPROVAL_GSI)
+        elif status:
+            approvals = self._query(Key("gsi2pk").eq(f"APPROVAL#{status}"), index=STATUS_GSI)
+        else:
+            approvals = self._query(Key("gsi1pk").eq("APPROVAL"), index=GSI)
         return [
             a
             for a in approvals
             if (status is None or a["status"] == status) and (incident_id is None or a["incident_id"] == incident_id)
         ]
 
+    def list_approvals_page(
+        self, status: str | None = None, incident_id: str | None = None, limit: int = 50, cursor: str | None = None
+    ) -> Page:
+        if incident_id:
+            index, key_name, key_value = INCIDENT_APPROVAL_GSI, "gsi3pk", f"APPROVAL#{incident_id}"
+        else:
+            index = STATUS_GSI if status else GSI
+            key_name = "gsi2pk" if status else "gsi1pk"
+            key_value = f"APPROVAL#{status}" if status else "APPROVAL"
+        kwargs: dict[str, Any] = {
+            "IndexName": index,
+            "KeyConditionExpression": Key(key_name).eq(key_value),
+            "ScanIndexForward": True,
+            "Limit": limit,
+        }
+        if cursor:
+            start_key = decode_cursor(cursor)
+            if not isinstance(start_key, dict):
+                raise ValueError("invalid cursor")
+            kwargs["ExclusiveStartKey"] = start_key
+        response = self.table.query(**kwargs)
+        items = [json.loads(item["doc"]) for item in response.get("Items", [])]
+        next_cursor = encode_cursor(response["LastEvaluatedKey"]) if response.get("LastEvaluatedKey") else None
+        return Page(items, next_cursor)
+
     # Records
     def get_record(self, kind: str, record_id: str) -> Record | None:
         return self._get(f"REC#{kind}#{record_id}")
 
     def list_records(self, kind: str, status: str | None = None, limit: int = 200) -> list[Record]:
-        records = self._query(Key("gsi1pk").eq(f"REC#{kind}"), index=GSI, forward=False)
-        return [r for r in records if status is None or r.get("status") == status][:limit]
+        if status:
+            return self._query(Key("gsi2pk").eq(f"REC#{kind}#{status}"), index=STATUS_GSI, forward=False, limit=limit)
+        return self._query(Key("gsi1pk").eq(f"REC#{kind}"), index=GSI, forward=False, limit=limit)
+
+    def list_records_page(
+        self, kind: str, status: str | None = None, limit: int = 200, cursor: str | None = None
+    ) -> Page:
+        index = STATUS_GSI if status else GSI
+        key_name = "gsi2pk" if status else "gsi1pk"
+        key_value = f"REC#{kind}#{status}" if status else f"REC#{kind}"
+        kwargs: dict[str, Any] = {
+            "IndexName": index,
+            "KeyConditionExpression": Key(key_name).eq(key_value),
+            "ScanIndexForward": False,
+            "Limit": limit,
+        }
+        if cursor:
+            start_key = decode_cursor(cursor)
+            if not isinstance(start_key, dict):
+                raise ValueError("invalid cursor")
+            kwargs["ExclusiveStartKey"] = start_key
+        response = self.table.query(**kwargs)
+        items = [json.loads(item["doc"]) for item in response.get("Items", [])]
+        next_cursor = encode_cursor(response["LastEvaluatedKey"]) if response.get("LastEvaluatedKey") else None
+        return Page(items, next_cursor)
 
     # Services
     def put_service(self, service: Record) -> None:

@@ -6,6 +6,7 @@ Payloads are JSON objects with an "action":
     {"action": "simulate", "scenario": "bad-deploy"}
     {"action": "decide_approval", "approval_id": "apr-...", "approve": true, "approver": "jane@corp", "note": "..."}
     {"action": "get_incident", "incident_id": "inc-..."}
+    {"action": "list_events", "incident_id": "inc-...", "limit": 100, "cursor": "..."}
     {"action": "list_incidents"}
     {"action": "list_approvals", "status": "pending"}
     {"action": "health"}
@@ -62,6 +63,9 @@ log = logging.getLogger(__name__)
 app = BedrockAgentCoreApp()
 app.add_middleware(auth.AuthMiddleware)  # OPSRELAY_AUTH_MODE decides whether it requires a token
 
+DEFAULT_LIST_LIMIT = 50
+MAX_LIST_LIMIT = 200
+
 _service: IncidentService | None = None
 _service_lock = threading.Lock()
 
@@ -78,6 +82,37 @@ def _require(payload: dict[str, Any], *keys: str) -> None:
     missing = [k for k in keys if not payload.get(k)]
     if missing:
         raise ValueError(f"missing field(s): {', '.join(missing)}")
+
+
+def _limit(payload: dict[str, Any], default: int = DEFAULT_LIST_LIMIT, maximum: int = MAX_LIST_LIMIT) -> int:
+    """Read a bounded list limit from an API payload."""
+    raw = payload.get("limit", default)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError) as e:
+        raise ValueError("limit must be an integer") from e
+    if not 1 <= value <= maximum:
+        raise ValueError(f"limit must be between 1 and {maximum}")
+    return value
+
+
+def _text(payload: dict[str, Any], key: str, *, required: bool = False, maximum: int = 5000) -> str:
+    """Read a bounded text field and turn malformed payloads into client errors."""
+    value = payload.get(key, "")
+    if not isinstance(value, str):
+        raise ValueError(f"{key} must be a string")
+    if required and not value.strip():
+        raise ValueError(f"{key} is required")
+    if len(value) > maximum:
+        raise ValueError(f"{key} must be at most {maximum} characters")
+    return value
+
+
+def _cursor(payload: dict[str, Any]) -> str | None:
+    value = payload.get("cursor")
+    if value is not None and not isinstance(value, str):
+        raise ValueError("cursor must be a string")
+    return value
 
 
 _intake: SqsIntake | None = None
@@ -207,8 +242,8 @@ def handle(payload: dict[str, Any]) -> dict[str, Any]:
     if action == "open_incident":
         _require(payload, "title")
         kwargs = {
-            "title": payload["title"],
-            "description": payload.get("description", ""),
+            "title": _text(payload, "title", required=True, maximum=300),
+            "description": _text(payload, "description", maximum=5000),
             "source": payload.get("source", "api"),
             "service": payload.get("service"),
             "external_ref": payload.get("external_ref"),
@@ -259,18 +294,35 @@ def handle(payload: dict[str, Any]) -> dict[str, Any]:
 
     if action == "get_incident":
         _require(payload, "incident_id")
-        return svc.get_incident(payload["incident_id"])
+        events_limit = payload.get("events_limit")
+        if events_limit is None:
+            return svc.get_incident(payload["incident_id"])
+        event_payload = {"limit": events_limit, "cursor": payload.get("events_cursor")}
+        approval_payload = {"limit": payload.get("approvals_limit", 100), "cursor": payload.get("approvals_cursor")}
+        return svc.get_incident(
+            payload["incident_id"],
+            events_limit=_limit(event_payload, default=100),
+            events_cursor=_cursor(event_payload),
+            approvals_limit=_limit(approval_payload, default=100)
+            if payload.get("approvals_limit") is not None
+            else None,
+            approvals_cursor=_cursor(approval_payload),
+        )
+    if action == "list_events":
+        _require(payload, "incident_id")
+        return svc.list_events_page(payload["incident_id"], _limit(payload, default=100), _cursor(payload))
     if action == "list_incidents":
-        return {"incidents": svc.list_incidents(int(payload.get("limit", 50)))}
+        return svc.list_incidents_page(_limit(payload), _cursor(payload))
     if action == "list_approvals":
-        return {"approvals": svc.list_approvals(payload.get("status", "pending"))}
+        return svc.list_approvals_page(payload.get("status", "pending"), _limit(payload), _cursor(payload))
     if action == "health":
-        return {"services": svc.health()}
+        return svc.health_report()
     if action == "verify_audit":
         _require(payload, "incident_id")
         return svc.verify_audit(payload["incident_id"])
     if action == "list_dead_letters":
-        return {"dead_letters": svc.dead_letters(int(payload.get("limit", 50)))}
+        page = svc.store.list_records_page("dead_letter", limit=_limit(payload), cursor=_cursor(payload))
+        return {"dead_letters": page.items, "next_cursor": page.next_cursor}
     if action == "get_policy":
         return {"policy": svc.policy()}
     if action == "test_policy":
@@ -299,7 +351,7 @@ def handle(payload: dict[str, Any]) -> dict[str, Any]:
     if action == "recover":
         return svc.recover()
     if action == "get_metrics":
-        return {"metrics": ops_metrics.compute(svc.store, int(payload.get("limit", 200)))}
+        return {"metrics": ops_metrics.compute(svc.store, _limit(payload, maximum=MAX_LIST_LIMIT))}
     if action == "changes":
         return {"version": svc.changes(payload.get("incident_id"))}
     if action == "integrations":
@@ -311,14 +363,15 @@ def handle(payload: dict[str, Any]) -> dict[str, Any]:
         _require(payload, "incident_id")
         return evals.replay(svc.store, payload["incident_id"])
     if action == "list_evals":
-        return {"evals": svc.store.list_records("eval", limit=int(payload.get("limit", 20)))}
+        page = svc.store.list_records_page("eval", limit=_limit(payload, default=20), cursor=_cursor(payload))
+        return {"evals": page.items, "next_cursor": page.next_cursor}
     if action == "get_postmortem":
         _require(payload, "incident_id")
         return svc.postmortem(payload["incident_id"])
     if action == "similar_incidents":
         return {
             "similar": svc.similar_incidents(
-                payload.get("query") or "", payload.get("incident_id"), int(payload.get("limit", 5))
+                payload.get("query") or "", payload.get("incident_id"), _limit(payload, default=5, maximum=50)
             )
         }
     if action == "search_runbooks":

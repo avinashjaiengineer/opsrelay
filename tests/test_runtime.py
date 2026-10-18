@@ -27,6 +27,55 @@ def test_ping(client):
     assert client.get("/ping").json()["status"] in ("Healthy", "HealthyBusy")
 
 
+def test_health_reports_schema_and_auth_readiness(client):
+    result = _invoke(client, {"action": "health"})
+    assert result["schema"]["ok"]
+    assert result["security"]["auth_mode"] == "none"
+    assert not result["security"]["ok"]
+
+
+def test_list_limits_are_bounded(client):
+    assert "between 1 and 200" in _invoke(client, {"action": "list_incidents", "limit": 0})["error"]
+    assert "must be an integer" in _invoke(client, {"action": "list_incidents", "limit": "many"})["error"]
+
+
+def test_incident_listing_returns_a_cursor(client):
+    result = _invoke(client, {"action": "list_incidents", "limit": 1})
+    assert "incidents" in result and "next_cursor" in result
+
+
+def test_audit_events_are_paginated(client):
+    opened = _invoke(client, {"action": "simulate", "scenario": "traffic-spike"})
+    page = _invoke(client, {"action": "list_events", "incident_id": opened["incident"]["id"], "limit": 1})
+    assert len(page["events"]) == 1
+    assert page["next_cursor"]
+
+
+def test_get_incident_supports_bounded_events(client):
+    opened = _invoke(client, {"action": "simulate", "scenario": "traffic-spike"})
+    detail = _invoke(
+        client,
+        {"action": "get_incident", "incident_id": opened["incident"]["id"], "events_limit": 1},
+    )
+    assert len(detail["events"]) == 1
+    assert detail["events_next_cursor"]
+
+
+def test_get_incident_supports_bounded_approvals(client):
+    opened = _invoke(client, {"action": "simulate", "scenario": "bad-deploy"})
+    detail = _invoke(
+        client,
+        {"action": "get_incident", "incident_id": opened["incident"]["id"], "approvals_limit": 1},
+    )
+    assert len(detail["approvals"]) == 1
+
+
+def test_incident_text_is_validated_at_api_boundary(client):
+    assert "title must be a string" in _invoke(client, {"action": "open_incident", "title": 42})["error"]
+    assert "title is required" in _invoke(client, {"action": "open_incident", "title": "  "})["error"]
+    assert "at most 300" in _invoke(client, {"action": "open_incident", "title": "x" * 301})["error"]
+
+
 def test_full_flow_over_http(client):
     opened = _invoke(client, {"action": "simulate", "scenario": "bad-deploy"})
     incident_id = opened["incident"]["id"]

@@ -205,6 +205,14 @@ secret values as `secretsmanager:` references. The steps below are what it does,
    opsrelay migrate --from /opt/opsrelay/opsrelay.db --to-table opsrelay    # creates the table if missing
    # systemd drop-in: OPSRELAY_STORE=dynamodb, OPSRELAY_DYNAMODB_TABLE=opsrelay
    ```
+   Tables created by an older release must be updated before switching traffic to the new
+   pagination and incident-scoped approval queries. Deploy the current stack (which adds `gsi2`
+   and `gsi3`), then backfill existing items:
+   ```bash
+   opsrelay backfill-index --table opsrelay --region us-east-1
+   ```
+   The coordinator's `health` action reports any missing indexes under `schema.missing_indexes`;
+   treat a non-empty list as a deployment failure. The command is safe to rerun.
    Turn on point-in-time recovery and deletion protection on the table, and give the instance
    role item access to it (Get/Put/Update/Delete/Query/ConditionCheck on the table and its index).
 2. **HTTPS.** Put an API Gateway HTTP API (an `HTTP_PROXY` integration to the instance's port 8080)
@@ -222,6 +230,12 @@ secret values as `secretsmanager:` references. The steps below are what it does,
    everything.
 
 ## Deploy to Amazon Bedrock AgentCore
+
+The AgentCore IAM boundary authenticates the runtime invocation, but it does not automatically
+provide OpsRelay with an end-user name or application roles. For production authorization, set
+`OPSRELAY_AUTH_MODE=oidc` and configure the issuer/audience, or use the explicit `dev` mode only
+for controlled environments. The `health` action reports `security.ok=false` when `auth_mode=none`;
+do not treat that mode as production user authentication.
 
 **Prerequisites:**
 

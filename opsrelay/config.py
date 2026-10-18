@@ -3,6 +3,7 @@
 from functools import lru_cache
 from typing import Literal
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 Role = Literal["coordinator", "triage", "diagnostics", "remediation", "verification", "communications"]
@@ -130,6 +131,14 @@ class Settings(BaseSettings):
     jira_api_token: str = ""
     jira_project: str = ""  # project key, e.g. OPS
     jira_issue_type: str = "Task"
+
+    @model_validator(mode="after")
+    def validate_auth_configuration(self) -> "Settings":
+        if self.auth_mode == "dev" and not self.dev_users:
+            raise ValueError("OPSRELAY_DEV_USERS is required when OPSRELAY_AUTH_MODE=dev")
+        if self.auth_mode == "oidc" and not self.oidc_issuer:
+            raise ValueError("OPSRELAY_OIDC_ISSUER is required when OPSRELAY_AUTH_MODE=oidc")
+        return self
 
     def endpoint_for(self, role: Role) -> str:
         return getattr(self, f"{role}_endpoint")

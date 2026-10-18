@@ -72,9 +72,14 @@ def _correlate(svc, alert: Alert) -> tuple[Record, str] | None:  # noqa: ANN001
         return None
     window = timedelta(minutes=get_settings().correlation_window_minutes)
     cutoff = (datetime.now(UTC) - window).isoformat(timespec="milliseconds")
-    recent = [
-        i for i in svc.store.list_incidents(limit=200) if _open(i) and i.get("service") and i["created_at"] >= cutoff
-    ]
+    recent = []
+    cursor = None
+    while True:
+        page = svc.store.list_incidents_page(limit=200, cursor=cursor)
+        recent.extend(i for i in page.items if _open(i) and i.get("service") and i["created_at"] >= cutoff)
+        if not page.next_cursor or (page.items and page.items[-1]["created_at"] < cutoff):
+            break
+        cursor = page.next_cursor
     for incident in recent:
         if incident["service"] == alert.service:
             return incident, "same service, open incident"

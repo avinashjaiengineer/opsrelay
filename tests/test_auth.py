@@ -10,7 +10,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from starlette.testclient import TestClient
 
 from opsrelay import auth, policy_admin, rbac
-from opsrelay.config import get_settings
+from opsrelay.config import Settings, get_settings
 from opsrelay.policy import get_policy
 from opsrelay.runtime import coordinator
 
@@ -22,6 +22,16 @@ TOKENS = {
     "bob": "tok-bob-admin",
     "vic": "tok-vic-viewer",
 }
+
+
+def test_auth_settings_require_their_configuration():
+    with pytest.raises(ValueError, match="DEV_USERS"):
+        Settings(auth_mode="dev")
+    with pytest.raises(ValueError, match="OIDC_ISSUER"):
+        Settings(auth_mode="oidc")
+    assert Settings(auth_mode="none").auth_mode == "none"
+
+
 USERS = [
     {"name": "Jane", "roles": ["sre", "incident_commander"], "token_sha256": auth.token_hash(TOKENS["jane"])},
     {"name": "Sam", "roles": ["sre"], "token_sha256": auth.token_hash(TOKENS["sam"])},

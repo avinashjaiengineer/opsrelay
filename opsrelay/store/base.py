@@ -15,6 +15,8 @@ create or move approvals and records, and append audit events. So:
   revision, which is how leases are taken and taken over.
 """
 
+import base64
+import binascii
 import hashlib
 import json
 import uuid
@@ -27,6 +29,16 @@ Record = dict[str, Any]
 
 GENESIS_HASH = "0" * 64
 AGENT_ROLES = ("coordinator", "triage", "diagnostics", "remediation", "verification", "communications")
+SENSITIVE_FIELD_PARTS = (
+    "token",
+    "secret",
+    "password",
+    "api_key",
+    "apikey",
+    "authorization",
+    "routing_key",
+    "access_key",
+)
 
 
 def now_iso() -> str:
@@ -47,6 +59,20 @@ def canonical(value: Any) -> str:
 
 def sha256(value: Any) -> str:
     return hashlib.sha256(canonical(value).encode()).hexdigest()
+
+
+def redact(value: Any) -> Any:
+    """Return a JSON-shaped copy with credential-like fields replaced before audit storage."""
+    if isinstance(value, dict):
+        return {
+            key: "[REDACTED]" if any(part in str(key).lower() for part in SENSITIVE_FIELD_PARTS) else redact(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [redact(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(redact(item) for item in value)
+    return value
 
 
 def seal(event: Record, prev_hash: str) -> Record:
@@ -72,11 +98,12 @@ class StatusChangeError(ValueError):
 
 @dataclass(frozen=True)
 class IncidentChange:
-    """Change an incident's fields, but only if its status is still `expected_status`."""
+    """Change an incident only if its status and revision are still current."""
 
     incident_id: str
     expected_status: str
     updates: Record
+    expected_rev: int | None = None
 
 
 @dataclass(frozen=True)
@@ -119,6 +146,24 @@ class Committed:
     events: list[Record]
 
 
+@dataclass(frozen=True)
+class Page:
+    items: list[Record]
+    next_cursor: str | None = None
+
+
+def encode_cursor(value: Any) -> str:
+    return base64.urlsafe_b64encode(canonical(value).encode()).decode().rstrip("=")
+
+
+def decode_cursor(cursor: str) -> Any:
+    try:
+        padded = cursor + "=" * (-len(cursor) % 4)
+        return json.loads(base64.urlsafe_b64decode(padded).decode())
+    except (TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError, binascii.Error) as e:
+        raise ValueError("invalid cursor") from e
+
+
 def make_event(
     incident_id: str | None,
     actor: str,
@@ -137,7 +182,7 @@ def make_event(
         "actor_type": actor_type(actor),
         "kind": kind,
         "message": message,
-        "data": data or {},
+        "data": redact(data or {}),
         "input_hash": sha256(input) if input is not None else None,
         "output_hash": sha256(output) if output is not None else None,
         "created_at": now_iso(),
@@ -151,6 +196,10 @@ def new_record(kind: str, record_id: str, status: str, **doc: Any) -> Record:
 
 
 class Store(ABC):
+    def schema_health(self) -> Record:
+        """Return storage schema readiness without making a write or failing the request."""
+        return {"ok": True, "backend": type(self).__name__}
+
     """Backends implement the abstract methods; everything else is built on `commit`."""
 
     # Atomic writes
@@ -172,6 +221,13 @@ class Store(ABC):
     def list_incidents(self, limit: int = 50) -> list[Record]:
         """Newest first."""
 
+    def list_incidents_page(self, limit: int = 50, cursor: str | None = None) -> Page:
+        """Paginated incident listing; backends override this with native keyset pagination."""
+        offset = int(decode_cursor(cursor)) if cursor else 0
+        rows = self.list_incidents(limit + offset + 1)[offset:]
+        next_cursor = encode_cursor(offset + limit) if len(rows) > limit else None
+        return Page(rows[:limit], next_cursor)
+
     # Audit log (append-only hash chain)
     @abstractmethod
     def list_events(self, incident_id: str) -> list[Record]:
@@ -189,6 +245,14 @@ class Store(ABC):
     def list_approvals(self, status: str | None = None, incident_id: str | None = None) -> list[Record]:
         """Oldest first."""
 
+    def list_approvals_page(
+        self, status: str | None = None, incident_id: str | None = None, limit: int = 50, cursor: str | None = None
+    ) -> Page:
+        offset = int(decode_cursor(cursor)) if cursor else 0
+        rows = self.list_approvals(status, incident_id)[offset : offset + limit + 1]
+        next_cursor = encode_cursor(offset + limit) if len(rows) > limit else None
+        return Page(rows[:limit], next_cursor)
+
     # Records: executions, jobs, dead letters, policy versions
     @abstractmethod
     def get_record(self, kind: str, record_id: str) -> Record | None: ...
@@ -196,6 +260,20 @@ class Store(ABC):
     @abstractmethod
     def list_records(self, kind: str, status: str | None = None, limit: int = 200) -> list[Record]:
         """Newest first."""
+
+    def list_records_page(
+        self, kind: str, status: str | None = None, limit: int = 200, cursor: str | None = None
+    ) -> Page:
+        offset = int(decode_cursor(cursor)) if cursor else 0
+        rows = self.list_records(kind, status, limit + offset + 1)[offset:]
+        next_cursor = encode_cursor(offset + limit) if len(rows) > limit else None
+        return Page(rows[:limit], next_cursor)
+
+    def list_events_page(self, incident_id: str, limit: int = 100, cursor: str | None = None) -> Page:
+        offset = int(decode_cursor(cursor)) if cursor else 0
+        rows = self.list_events(incident_id)[offset : offset + limit + 1]
+        next_cursor = encode_cursor(offset + limit) if len(rows) > limit else None
+        return Page(rows[:limit], next_cursor)
 
     # Simulated environment
     @abstractmethod
@@ -240,7 +318,12 @@ class Store(ABC):
             incident = self.get_incident(incident_id)
             if incident is None:
                 raise KeyError(f"Unknown incident {incident_id}")
-            change = IncidentChange(incident_id, incident["status"], {**fields, "updated_at": now_iso()})
+            change = IncidentChange(
+                incident_id,
+                incident["status"],
+                {**fields, "updated_at": now_iso()},
+                expected_rev=int(incident.get("rev", 0)),
+            )
             done = self.commit(Commit(incident=change, events=list(events)))
             if done is not None:
                 return done.incident

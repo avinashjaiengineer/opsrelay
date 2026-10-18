@@ -115,7 +115,10 @@ def transition(
     done = store.commit(
         Commit(
             incident=IncidentChange(
-                incident_id, str(current), {**fields, "status": str(to), "status_since": now, "updated_at": now}
+                incident_id,
+                str(current),
+                {**fields, "status": str(to), "status_since": now, "updated_at": now},
+                expected_rev=int(incident.get("rev", 0)),
             ),
             new_approvals=list(new_approvals),
             approval_moves=moves,

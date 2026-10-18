@@ -249,6 +249,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--from", dest="source", required=True, help="the SQLite file, e.g. opsrelay.db")
     p.add_argument("--to-table", required=True, help="the DynamoDB table (created if missing)")
     p.add_argument("--region", default=os.environ.get("AWS_REGION", "us-east-1"))
+    p = sub.add_parser("backfill-index", help="backfill DynamoDB status-index keys on existing records")
+    p.add_argument("--table", required=True)
+    p.add_argument("--region", default=os.environ.get("AWS_REGION", "us-east-1"))
     p = sub.add_parser("up", help="run the coordinator and the five specialists locally over A2A (no Docker)")
     p.add_argument("--port", type=int, default=8080, help="coordinator port (default 8080)")
     p.add_argument(
@@ -274,6 +277,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.cmd == "migrate":
         return _migrate(args.source, args.to_table, args.region)
+
+    if args.cmd == "backfill-index":
+        return _backfill_index(args.table, args.region)
 
     if args.cmd == "users":
         return _add_user(args.file, args.name, [r.strip() for r in args.roles.split(",") if r.strip()])
@@ -488,6 +494,14 @@ def _migrate(source: str, table: str, region: str) -> int:
     result = migrate(SqliteStore(source), DynamoStore(table, region))
     print(json.dumps(result, indent=2))
     return 0 if not result["mismatched"] else 2
+
+
+def _backfill_index(table: str, region: str) -> int:
+    from .store.dynamodb import DynamoStore
+
+    count = DynamoStore(table, region).backfill_status_index()
+    print(json.dumps({"updated": count, "table": table}, indent=2))
+    return 0
 
 
 def _eval(args: argparse.Namespace) -> int:

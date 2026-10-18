@@ -262,11 +262,17 @@ def run_approved(store: Store, env: Environment, approval: Record) -> Record:
 def recover(store: Store, env: Environment) -> list[str]:
     """Finish remediations interrupted by a crash or restart. Returns the incidents touched."""
     touched = []
-    for incident in store.list_incidents(limit=200):
-        if incident["status"] != Status.REMEDIATING:
-            continue
-        for approval in store.list_approvals(status="approved", incident_id=incident["id"]):
-            done = run_approved(store, env, approval)
-            if done["status"] != "approved":
-                touched.append(incident["id"])
+    cursor = None
+    while True:
+        page = store.list_incidents_page(limit=200, cursor=cursor)
+        for incident in page.items:
+            if incident["status"] != Status.REMEDIATING:
+                continue
+            for approval in store.list_approvals(status="approved", incident_id=incident["id"]):
+                done = run_approved(store, env, approval)
+                if done["status"] != "approved":
+                    touched.append(incident["id"])
+        if not page.next_cursor:
+            break
+        cursor = page.next_cursor
     return touched

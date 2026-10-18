@@ -126,9 +126,15 @@ class IncidentService:
         if not title.strip():
             raise ValueError("title is required")
         if external_ref and incident_id is None:
-            for existing in self.store.list_incidents(limit=200):
-                if existing.get("external_ref") == external_ref and existing["status"] not in TERMINAL:
-                    return {"incident": existing, "report": None, "deduplicated": True}
+            cursor = None
+            while True:
+                page = self.store.list_incidents_page(limit=200, cursor=cursor)
+                for existing in page.items:
+                    if existing.get("external_ref") == external_ref and existing["status"] not in TERMINAL:
+                        return {"incident": existing, "report": None, "deduplicated": True}
+                if not page.next_cursor:
+                    break
+                cursor = page.next_cursor
         created = now_iso()
         incident = {
             "id": incident_id or new_incident_id(),
@@ -146,6 +152,7 @@ class IncidentService:
             "scenario": scenario,  # the simulated fault behind it, so it can be replayed (opsrelay.evals)
             "created_at": created,
             "updated_at": created,
+            "rev": 0,
         }
         self.store.put_incident(incident)
         telemetry.count("incidents_total", source=source)
@@ -223,16 +230,46 @@ class IncidentService:
         parsed = alerts.parse(message, router.known_services(self))
         return [router.ingest(self, alert, queue=queue) for alert in parsed]
 
-    def get_incident(self, incident_id: str) -> Record:
+    def get_incident(
+        self,
+        incident_id: str,
+        *,
+        events_limit: int | None = None,
+        events_cursor: str | None = None,
+        approvals_limit: int | None = None,
+        approvals_cursor: str | None = None,
+    ) -> Record:
         incident = self.store.get_incident(incident_id)
         if incident is None:
             raise KeyError(f"Unknown incident {incident_id}")
+        if events_limit is None:
+            events = self.store.list_events(incident_id)
+            events_next_cursor = None
+        else:
+            page = self.store.list_events_page(incident_id, events_limit, events_cursor)
+            events, events_next_cursor = page.items, page.next_cursor
+        if approvals_limit is None:
+            approvals = self.store.list_approvals(incident_id=incident_id)
+            approvals_next_cursor = None
+        else:
+            page = self.store.list_approvals_page(
+                incident_id=incident_id, limit=approvals_limit, cursor=approvals_cursor
+            )
+            approvals, approvals_next_cursor = page.items, page.next_cursor
         return {
             "incident": incident,
-            "approvals": self.store.list_approvals(incident_id=incident_id),
-            "events": self.store.list_events(incident_id),
+            "approvals": approvals,
+            "approvals_next_cursor": approvals_next_cursor,
+            "events": events,
+            "events_next_cursor": events_next_cursor,
             "similar": memory.similar(self.store, incident) if incident.get("service") else [],
         }
+
+    def list_events_page(self, incident_id: str, limit: int = 100, cursor: str | None = None) -> Record:
+        if self.store.get_incident(incident_id) is None:
+            raise KeyError(f"Unknown incident {incident_id}")
+        page = self.store.list_events_page(incident_id, limit, cursor)
+        return {"events": page.items, "next_cursor": page.next_cursor}
 
     def changes(self, incident_id: str | None = None) -> str:
         """A short fingerprint of what the console shows: the incident list (ids, statuses, update
@@ -271,11 +308,35 @@ class IncidentService:
     def list_incidents(self, limit: int = 50) -> list[Record]:
         return self.store.list_incidents(limit)
 
+    def list_incidents_page(self, limit: int = 50, cursor: str | None = None) -> Record:
+        page = self.store.list_incidents_page(limit, cursor)
+        return {"incidents": page.items, "next_cursor": page.next_cursor}
+
     def list_approvals(self, status: str | None = "pending") -> list[Record]:
         return self.store.list_approvals(status=status)
 
+    def list_approvals_page(self, status: str | None = "pending", limit: int = 50, cursor: str | None = None) -> Record:
+        page = self.store.list_approvals_page(status=status, limit=limit, cursor=cursor)
+        return {"approvals": page.items, "next_cursor": page.next_cursor}
+
     def health(self) -> list[Record]:
         return self.env.health_overview()
+
+    def health_report(self) -> Record:
+        """Return service, persistence-schema, and request-auth readiness together."""
+        settings = get_settings()
+        authenticated = settings.auth_mode != "none"
+        return {
+            "services": self.health(),
+            "schema": self.store.schema_health(),
+            "security": {
+                "ok": authenticated,
+                "auth_mode": settings.auth_mode,
+                "warning": None
+                if authenticated
+                else "Anonymous request authentication is enabled; configure OIDC or dev auth for production.",
+            },
+        }
 
     def verify_audit(self, incident_id: str) -> Record:
         if incident_id != "policy" and self.store.get_incident(incident_id) is None:

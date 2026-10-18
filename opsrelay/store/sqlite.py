@@ -4,7 +4,7 @@ import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 
-from .base import GENESIS_HASH, Commit, Committed, Record, Store, now_iso, seal
+from .base import GENESIS_HASH, Commit, Committed, Page, Record, Store, decode_cursor, encode_cursor, now_iso, seal
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS incidents (id TEXT PRIMARY KEY, created_at TEXT, doc TEXT NOT NULL);
@@ -81,9 +81,12 @@ class SqliteStore(Store):
             if row is None:
                 raise _Conflict
             incident = json.loads(row[0])
-            if incident["status"] != c.expected_status:
+            if incident["status"] != c.expected_status or (
+                c.expected_rev is not None and int(incident.get("rev", 0)) != c.expected_rev
+            ):
                 raise _Conflict
             incident.update(c.updates)
+            incident["rev"] = int(incident.get("rev", 0)) + 1
             conn.execute("UPDATE incidents SET doc = ? WHERE id = ?", (json.dumps(incident), c.incident_id))
 
         approvals: dict[str, Record] = {}
@@ -143,6 +146,7 @@ class SqliteStore(Store):
 
     # Incidents
     def put_incident(self, incident: Record) -> None:
+        incident = {**incident, "rev": int(incident.get("rev", 0))}
         self._exec(
             "INSERT INTO incidents (id, created_at, doc) VALUES (?, ?, ?)",
             (incident["id"], incident["created_at"], json.dumps(incident)),
@@ -154,9 +158,50 @@ class SqliteStore(Store):
     def list_incidents(self, limit: int = 50) -> list[Record]:
         return self._all("SELECT doc FROM incidents ORDER BY created_at DESC LIMIT ?", (limit,))
 
+    def list_incidents_page(self, limit: int = 50, cursor: str | None = None) -> Page:
+        args: list[str | int] = []
+        where = ""
+        if cursor:
+            created_at, incident_id = decode_cursor(cursor)
+            where = "WHERE created_at < ? OR (created_at = ? AND id < ?)"
+            args.extend([created_at, created_at, incident_id])
+        if where:
+            rows = self._all(
+                "SELECT doc FROM incidents WHERE created_at < ? OR (created_at = ? AND id < ?) "
+                "ORDER BY created_at DESC, id DESC LIMIT ?",
+                (*args, limit + 1),
+            )
+        else:
+            rows = self._all("SELECT doc FROM incidents ORDER BY created_at DESC, id DESC LIMIT ?", (limit + 1,))
+        next_cursor = None
+        if len(rows) > limit:
+            last = rows[limit - 1]
+            next_cursor = encode_cursor([last["created_at"], last["id"]])
+            rows = rows[:limit]
+        return Page(rows, next_cursor)
+
     # Audit log
     def list_events(self, incident_id: str) -> list[Record]:
         return self._all("SELECT doc FROM events WHERE incident_id = ? ORDER BY seq", (incident_id,))
+
+    def list_events_page(self, incident_id: str, limit: int = 100, cursor: str | None = None) -> Page:
+        args: list[str | int] = [incident_id]
+        where = "WHERE incident_id = ?"
+        if cursor:
+            seq = decode_cursor(cursor)
+            where += " AND seq > ?"
+            args.append(int(seq))
+        with self._lock:
+            raw_rows = self._conn.execute(
+                f"SELECT doc, seq FROM events {where} ORDER BY seq LIMIT ?",  # noqa: S608
+                (*args, limit + 1),  # noqa: S608
+            ).fetchall()
+        rows = [json.loads(row[0]) | {"seq": row[1]} for row in raw_rows]
+        next_cursor = None
+        if len(rows) > limit:
+            next_cursor = encode_cursor(rows[limit - 1]["seq"])
+            rows = rows[:limit]
+        return Page(rows, next_cursor)
 
     def event_count(self, incident_id: str) -> int:
         return self._conn.execute("SELECT COUNT(*) FROM events WHERE incident_id = ?", (incident_id,)).fetchone()[0]
@@ -175,6 +220,33 @@ class SqliteStore(Store):
             args.append(incident_id)
         return self._all(sql + " ORDER BY created_at", tuple(args))
 
+    def list_approvals_page(
+        self, status: str | None = None, incident_id: str | None = None, limit: int = 50, cursor: str | None = None
+    ) -> Page:
+        conditions: list[str] = []
+        args: list[str | int] = []
+        if status:
+            conditions.append("status = ?")
+            args.append(status)
+        if incident_id:
+            conditions.append("incident_id = ?")
+            args.append(incident_id)
+        if cursor:
+            created_at, approval_id = decode_cursor(cursor)
+            conditions.append("(created_at > ? OR (created_at = ? AND id > ?))")
+            args.extend([created_at, created_at, approval_id])
+        where = " WHERE " + " AND ".join(conditions) if conditions else ""
+        rows = self._all(
+            f"SELECT doc FROM approvals{where} ORDER BY created_at, id LIMIT ?",  # noqa: S608
+            (*args, limit + 1),  # noqa: S608
+        )
+        next_cursor = None
+        if len(rows) > limit:
+            last = rows[limit - 1]
+            next_cursor = encode_cursor([last["created_at"], last["id"]])
+            rows = rows[:limit]
+        return Page(rows, next_cursor)
+
     # Records
     def get_record(self, kind: str, record_id: str) -> Record | None:
         return self._one("SELECT doc FROM records WHERE kind = ? AND id = ?", (kind, record_id))
@@ -186,6 +258,29 @@ class SqliteStore(Store):
                 (kind, status, limit),
             )
         return self._all("SELECT doc FROM records WHERE kind = ? ORDER BY created_at DESC LIMIT ?", (kind, limit))
+
+    def list_records_page(
+        self, kind: str, status: str | None = None, limit: int = 200, cursor: str | None = None
+    ) -> Page:
+        args: list[str | int] = [kind]
+        where = "kind = ?"
+        if status:
+            where += " AND status = ?"
+            args.append(status)
+        if cursor:
+            created_at, record_id = decode_cursor(cursor)
+            where += " AND (created_at < ? OR (created_at = ? AND id < ?))"
+            args.extend([created_at, created_at, record_id])
+        rows = self._all(
+            f"SELECT doc FROM records WHERE {where} ORDER BY created_at DESC, id DESC LIMIT ?",  # noqa: S608
+            (*args, limit + 1),  # noqa: S608
+        )
+        next_cursor = None
+        if len(rows) > limit:
+            last = rows[limit - 1]
+            next_cursor = encode_cursor([last["created_at"], last["id"]])
+            rows = rows[:limit]
+        return Page(rows, next_cursor)
 
     # Services
     def put_service(self, service: Record) -> None:

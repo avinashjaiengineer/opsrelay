@@ -1,5 +1,5 @@
 {
-  "app": "python3 app.py",
+  "app": "python app.py",
   "context": {
     "model_provider": "bedrock",
     "model_id": "global.amazon.nova-2-lite-v1:0",
